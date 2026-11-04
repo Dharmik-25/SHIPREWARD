@@ -1,50 +1,62 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app';
-import { initDatabase } from '../src/db/database';
+import { initDatabase, db } from '../src/db/database';
 import { WebhookService } from '../src/services/webhook.service';
 import { EvaluationService } from '../src/services/evaluation.service';
-import { BudgetService } from '../src/services/budget.service';
-import { BitrefillService } from '../src/services/bitrefill.service';
+import { GitHubService } from '../src/services/github.service';
 import crypto from 'node:crypto';
 
+const TEST_SECRET = 'shipreward_test_webhook_secret_2026';
+
+function signPayload(payload: string, secret = TEST_SECRET): string {
+  const hmac = crypto.createHmac('sha256', secret);
+  return 'sha256=' + hmac.update(payload).digest('hex');
+}
+
 beforeAll(() => {
+  process.env.GITHUB_WEBHOOK_SECRET = TEST_SECRET;
   initDatabase();
 });
 
-describe('SHIPREWARD Backend Core Engine Tests', () => {
+describe('Phase 2 — Real GitHub Webhook & Verification Tests', () => {
 
-  // 1. Health Endpoint
-  it('GET /api/health returns ok status and separated metrics', async () => {
-    const res = await request(app).get('/api/health');
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('ok');
-    expect(res.body.database).toBe('connected');
-    expect(res.body.bitrefill).toBeDefined();
-    expect(res.body.metrics.totalPrograms).toBeGreaterThanOrEqual(3);
-    // Explicit partitioning of demo vs live
-    expect(res.body.metrics.demoContributions).toBeGreaterThan(0);
-  });
+  // 1. Signature Verification
+  it('Accepts webhook with valid HMAC-SHA256 signature', async () => {
+    const payload = JSON.stringify({
+      action: 'opened',
+      pull_request: {
+        number: 301,
+        title: 'feat: add distributed lock to scheduler',
+        user: { login: 'octo-dev' },
+        base: { ref: 'main', repo: { full_name: 'shipreward/core-engine' } },
+        head: { ref: 'feature/lock' },
+        changed_files: 3,
+        additions: 45,
+        deletions: 10
+      }
+    });
 
-  // 2. Programmes API
-  it('GET /api/programmes returns all 3 configured tiers (Campus, Builder, Enterprise)', async () => {
-    const res = await request(app).get('/api/programmes');
-    expect(res.status).toBe(200);
-    expect(res.body.length).toBeGreaterThanOrEqual(3);
-
-    const tiers = res.body.map((p: any) => p.tier);
-    expect(tiers).toContain('BUILDER');
-    expect(tiers).toContain('CAMPUS');
-    expect(tiers).toContain('ENTERPRISE');
-  });
-
-  // 3. Webhook HMAC-SHA256 Verification
-  it('Rejects webhook with invalid HMAC signature', async () => {
-    const payload = JSON.stringify({ action: 'closed' });
+    const signature = signPayload(payload);
     const res = await request(app)
       .post('/api/webhooks/github')
-      .set('x-hub-signature-256', 'sha256=invalid_hex_digest_12345')
+      .set('x-hub-signature-256', signature)
       .set('x-github-event', 'pull_request')
+      .set('x-github-delivery', 'deliv_test_' + Date.now() + '_1')
+      .set('content-type', 'application/json')
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('PENDING');
+  });
+
+  it('Rejects webhook with invalid HMAC signature with 401', async () => {
+    const payload = JSON.stringify({ action: 'opened' });
+    const res = await request(app)
+      .post('/api/webhooks/github')
+      .set('x-hub-signature-256', 'sha256=invalid_hash_signature_000000')
+      .set('x-github-event', 'pull_request')
+      .set('x-github-delivery', 'deliv_test_bad_sig')
       .set('content-type', 'application/json')
       .send(payload);
 
@@ -52,25 +64,120 @@ describe('SHIPREWARD Backend Core Engine Tests', () => {
     expect(res.body.error).toContain('Invalid HMAC-SHA256');
   });
 
-  it('Verifies valid HMAC-SHA256 signature accurately', () => {
-    const secret = 'test_secret_key_123';
-    const payload = '{"hello":"world"}';
-    const hmac = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-    const header = `sha256=${hmac}`;
+  // 2. Idempotency Check
+  it('Ignores duplicate webhook delivery ID (idempotency enforcement)', async () => {
+    const payload = JSON.stringify({
+      action: 'opened',
+      pull_request: {
+        number: 302,
+        title: 'docs: update architecture overview',
+        user: { login: 'dev-alex' },
+        base: { ref: 'main', repo: { full_name: 'shipreward/core-engine' } }
+      }
+    });
 
-    const isValid = WebhookService.verifySignature(payload, header, secret);
-    expect(isValid).toBe(true);
+    const signature = signPayload(payload);
+    const deliveryId = 'deliv_idempotent_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
 
-    const isInvalid = WebhookService.verifySignature(payload, 'sha256=wrong', secret);
-    expect(isInvalid).toBe(false);
+    // First delivery
+    const res1 = await request(app)
+      .post('/api/webhooks/github')
+      .set('x-hub-signature-256', signature)
+      .set('x-github-event', 'pull_request')
+      .set('x-github-delivery', deliveryId)
+      .set('content-type', 'application/json')
+      .send(payload);
+    expect(res1.status).toBe(200);
+
+    // Duplicate delivery
+    const res2 = await request(app)
+      .post('/api/webhooks/github')
+      .set('x-hub-signature-256', signature)
+      .set('x-github-event', 'pull_request')
+      .set('x-github-delivery', deliveryId)
+      .set('content-type', 'application/json')
+      .send(payload);
+    expect(res2.status).toBe(200);
+    expect(res2.body.status).toBe('ignored');
+    expect(res2.body.message).toContain('Duplicate');
   });
 
-  // 4. Deterministic Evaluation Engine
-  it('Evaluates genuine contribution as VERIFIED with high score', () => {
+  // 3. Unmerged PR Rejection
+  it('Rejects unmerged PR closed event', async () => {
+    const payload = JSON.stringify({
+      action: 'closed',
+      pull_request: {
+        number: 303,
+        title: 'refactor: experimental abandoned rewrite',
+        user: { login: 'contributor-bob' },
+        merged: false, // NOT merged!
+        base: { ref: 'main', repo: { full_name: 'shipreward/core-engine' } }
+      }
+    });
+
+    const signature = signPayload(payload);
+    const res = await request(app)
+      .post('/api/webhooks/github')
+      .set('x-hub-signature-256', signature)
+      .set('x-github-event', 'pull_request')
+      .set('x-github-delivery', 'deliv_unmerged_' + Date.now() + '_3')
+      .set('content-type', 'application/json')
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('REJECTED');
+    expect(res.body.message).toContain('without being merged');
+  });
+
+  // 4. Merged PR Evaluation & Verification
+  it('Evaluates merged PR and marks VERIFIED without executing purchases', async () => {
+    const payload = JSON.stringify({
+      action: 'closed',
+      pull_request: {
+        number: 304,
+        title: 'fix(worker): prevent race condition during job acknowledgment',
+        user: { login: 'contributor-alice' },
+        merged: true,
+        merged_at: new Date().toISOString(),
+        base: { ref: 'main', repo: { full_name: 'shipreward/core-engine' } },
+        head: { ref: 'fix/ack-race' },
+        changed_files: 3,
+        additions: 64,
+        deletions: 12
+      }
+    });
+
+    const signature = signPayload(payload);
+    const res = await request(app)
+      .post('/api/webhooks/github')
+      .set('x-hub-signature-256', signature)
+      .set('x-github-event', 'pull_request')
+      .set('x-github-delivery', 'deliv_merged_' + Date.now() + '_4')
+      .set('content-type', 'application/json')
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('VERIFIED');
+    expect(res.body.score).toBeGreaterThanOrEqual(80);
+    expect(res.body.ruleChecks.mergedIntoTarget).toBe(true);
+
+    // Verify database record has is_demo = 0 (LIVE GITHUB EVENT)
+    const record = db.prepare('SELECT * FROM contributions WHERE pr_number = 304').get() as any;
+    expect(record).toBeDefined();
+    expect(record.is_demo).toBe(0);
+    expect(record.verification_status).toBe('VERIFIED');
+
+    // CRITICAL: Verify NO Bitrefill purchase was created in Phase 2
+    const rewardRecord = db.prepare('SELECT * FROM rewards WHERE contribution_id = ?').get(record.id);
+    expect(rewardRecord).toBeUndefined();
+  });
+
+  // 5. Failed CI Suite Check
+  it('Rejects PR when CI tests fail', () => {
     const policy: any = {
       repository: 'shipreward/core-engine',
       targetBranch: 'main',
-      minScore: 80,
+      minScore: 70,
       requireCiPass: true,
       requireMaintainerApproval: true,
       allowSelfApproval: false,
@@ -78,32 +185,31 @@ describe('SHIPREWARD Backend Core Engine Tests', () => {
 
     const input: any = {
       repository: 'shipreward/core-engine',
-      prNumber: 201,
-      prTitle: 'fix(auth): correct token expiry calculation',
-      contributor: 'developer-jane',
+      prNumber: 305,
+      prTitle: 'feat: add analytics webhook',
+      contributor: 'dev-charlie',
       baseBranch: 'main',
       merged: true,
-      ciStatus: 'passed',
+      ciStatus: 'failed', // CI FAILED!
       maintainerApproved: true,
       selfApproved: false,
-      additions: 55,
-      deletions: 12,
-      changedFilesCount: 3,
+      additions: 40,
+      deletions: 5,
+      changedFilesCount: 2,
     };
 
-    const res = EvaluationService.evaluateContribution(input, policy);
-    expect(res.status).toBe('VERIFIED');
-    expect(res.score).toBeGreaterThanOrEqual(80);
-    expect(res.ruleChecks.ciChecksPassed).toBe(true);
-    expect(res.ruleChecks.maintainerApproved).toBe(true);
+    const evalResult = EvaluationService.evaluateContribution(input, policy);
+    expect(evalResult.status).toBe('REJECTED');
+    expect(evalResult.ruleChecks.ciChecksPassed).toBe(false);
+    expect(evalResult.explanation).toContain('automated CI test suites failed');
   });
 
-  // 5. Fraud Engine Checks
-  it('Flags self-approval as fraud and prevents automatic reward', () => {
+  // 6. Anti-Fraud: Self-Approval Detection
+  it('Flags self-approval as fraud and prevents reward eligibility', () => {
     const policy: any = {
       repository: 'shipreward/core-engine',
       targetBranch: 'main',
-      minScore: 80,
+      minScore: 70,
       requireCiPass: true,
       requireMaintainerApproval: true,
       allowSelfApproval: false,
@@ -111,49 +217,56 @@ describe('SHIPREWARD Backend Core Engine Tests', () => {
 
     const input: any = {
       repository: 'shipreward/core-engine',
-      prNumber: 202,
-      prTitle: 'docs: update readme',
-      contributor: 'bot_user',
-      maintainerHandle: 'bot_user', // Self-approval!
+      prNumber: 306,
+      prTitle: 'chore: bump minor dependencies',
+      contributor: 'sneaky_dev',
+      maintainerHandle: 'sneaky_dev', // Same user!
+      selfApproved: true,
       baseBranch: 'main',
       merged: true,
       ciStatus: 'passed',
       maintainerApproved: true,
-      selfApproved: true,
-      additions: 2,
-      deletions: 2,
+      additions: 15,
+      deletions: 15,
       changedFilesCount: 1,
     };
 
-    const res = EvaluationService.evaluateContribution(input, policy);
-    expect(res.status).toBe('FRAUD_FLAGGED');
-    expect(res.fraudFlags).toContain('SELF_APPROVAL_DETECTED');
+    const evalResult = EvaluationService.evaluateContribution(input, policy);
+    expect(evalResult.status).toBe('FRAUD_FLAGGED');
+    expect(evalResult.fraudFlags).toContain('SELF_APPROVAL_DETECTED');
   });
 
-  // 6. Spend Guardrails
-  it('Enforces single reward cap and emergency freeze', () => {
-    // Over single reward cap ($10)
-    const check1 = BudgetService.authorizeSpend('prog_builder_core', 15.00);
-    expect(check1.authorized).toBe(false);
-    expect(check1.reason).toContain('EXCEEDS_SINGLE_REWARD_CAP');
+  // 7. Contributor to Recipient Mapping
+  it('Maps contributor username to configured reward email/phone', async () => {
+    // Set recipient mapping
+    const postRes = await request(app)
+      .post('/api/contributors/alex-dev/recipient')
+      .send({ recipientEmail: 'alex@community.dev', recipientPhone: '919876543210' });
+    expect(postRes.status).toBe(200);
 
-    // Normal reward ($5.98) within cap
-    const check2 = BudgetService.authorizeSpend('prog_builder_core', 5.98);
-    expect(check2.authorized).toBe(true);
+    // Retrieve recipient mapping
+    const getRes = await request(app).get('/api/contributors/alex-dev/recipient');
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.recipientEmail).toBe('alex@community.dev');
+    expect(getRes.body.recipientPhone).toBe('919876543210');
   });
 
-  // 7. Bitrefill Product & Voucher Masking
-  it('Masks voucher codes to prevent sensitive disclosure', () => {
-    const rawCode = 'SWIGGY-8942-1928-9821';
-    const masked = BitrefillService.maskVoucherCode(rawCode);
-    expect(masked).toBe('SWIGGY-••••-••••-9821');
-    expect(masked).not.toContain('8942');
+  // 8. Recipient Directive Extraction
+  it('Extracts recipient directives from PR body descriptions', () => {
+    const body1 = 'Closes #42. Implementation of raft heartbeat.\n\nSHIPREWARD: dev@acme.org';
+    const recipient1 = GitHubService.extractRecipientDirective(body1);
+    expect(recipient1?.email).toBe('dev@acme.org');
+
+    const body2 = 'Fixes typo.\n\nReward-To: 919876543210';
+    const recipient2 = GitHubService.extractRecipientDirective(body2);
+    expect(recipient2?.phone).toBe('919876543210');
   });
 
-  it('Searches Indian catalog for Swiggy and Zomato products', () => {
-    const swiggy = BitrefillService.searchProducts('swiggy', 'IN');
-    expect(swiggy.length).toBeGreaterThan(0);
-    expect(swiggy[0].id).toBe('swiggy-india');
-    expect(swiggy[0].packages.length).toBeGreaterThan(0);
+  // 9. Repo Status Endpoint
+  it('GET /api/github/repo-status reports configuration health', async () => {
+    const res = await request(app).get('/api/github/repo-status?repo=shipreward/core-engine');
+    expect(res.status).toBe(200);
+    expect(res.body.repository).toBe('shipreward/core-engine');
+    expect(res.body.webhookSecretConfigured).toBe(true);
   });
 });

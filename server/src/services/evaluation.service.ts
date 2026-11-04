@@ -12,6 +12,9 @@ export interface ContributionInput {
   maintainerApproved: boolean;
   selfApproved: boolean;
   maintainerHandle?: string;
+  approvingMaintainers?: string[];
+  hasTestFiles?: boolean;
+  commitCount?: number;
   additions: number;
   deletions: number;
   changedFilesCount: number;
@@ -66,6 +69,7 @@ export class EvaluationService {
 
     if (input.ciStatus === 'passed') score += 15;
     if (input.maintainerApproved) score += 10;
+    if (input.hasTestFiles) score += 10; // Bonus for writing tests!
     if (input.prTitle.startsWith('fix') || input.prTitle.startsWith('feat')) score += 5;
 
     // Apply fraud penalty
@@ -104,3 +108,4 @@ export class EvaluationService {
     };
   }
 }
+

@@ -138,3 +138,4 @@ export const RewardsView: React.FC<RewardsViewProps> = ({ rewards }) => {
     </div>
   );
 };
+

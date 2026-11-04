@@ -307,3 +307,4 @@ export const SimulationModal: React.FC<SimulationModalProps> = ({ isOpen, onClos
     </div>
   );
 };
+

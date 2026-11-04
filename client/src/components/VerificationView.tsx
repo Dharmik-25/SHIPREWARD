@@ -74,9 +74,14 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-500 font-mono">EVIDENCE INSPECTOR</span>
-                {active.isDemo && (
-                  <span className="px-1.5 py-0.2 rounded bg-slate-800 border border-slate-700 text-slate-400 font-mono text-[9px]">
-                    DEMO SEED
+                {active.isDemo ? (
+                  <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400 font-mono text-[10px]">
+                    DEMO SEED / SIMULATION
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-emerald-300 font-mono text-[10px] font-bold flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.3)]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    LIVE GITHUB WEBHOOK EVIDENCE
                   </span>
                 )}
               </div>
@@ -97,12 +102,12 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
           </div>
 
           {/* Quick Info Grid */}
-          <div className="grid grid-cols-2 gap-3 my-3 text-xs font-mono">
+          <div className="grid grid-cols-3 gap-3 my-3 text-xs font-mono">
             <div className="bg-[#14161D] border border-[#20242F] p-3 rounded-xl">
               <div className="text-slate-500">CONTRIBUTOR & IDENTITY</div>
               <div className="text-slate-200 font-semibold mt-1">@{active.contributor}</div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                {active.selfApproved ? '⚠️ Self-approval detected' : '✓ Normal author/reviewer segregation'}
+                {active.selfApproved ? '⚠️ Self-approval detected' : '✓ Segregated author/reviewer'}
               </div>
             </div>
 
@@ -113,6 +118,16 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
               </div>
               <div className="text-[10px] text-emerald-400 mt-0.5">
                 +{active.additions} / -{active.deletions} lines ({active.changedFilesCount} files)
+              </div>
+            </div>
+
+            <div className="bg-[#14161D] border border-[#20242F] p-3 rounded-xl">
+              <div className="text-slate-500">REWARD RECIPIENT TARGET</div>
+              <div className="text-slate-200 font-semibold mt-1">
+                {active.evidenceDetails?.recipient?.email || active.evidenceDetails?.recipient?.phone || 'Mapped: Direct Account'}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">
+                {active.evidenceDetails?.recipient ? 'From PR directive / policy' : 'Pending contributor claim'}
               </div>
             </div>
           </div>
@@ -246,3 +261,4 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
     </div>
   );
 };
+

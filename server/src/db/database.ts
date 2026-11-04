@@ -111,6 +111,13 @@ export function initDatabase() {
       event_type TEXT NOT NULL,
       received_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS contributor_recipients (
+      contributor_username TEXT PRIMARY KEY,
+      recipient_email TEXT,
+      recipient_phone TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   seedInitialPrograms();
@@ -424,3 +431,4 @@ function seedDemoRecords() {
     JSON.stringify({ flags: ['SELF_APPROVAL_DETECTED', 'TRIVIAL_DIFF_BELOW_THRESHOLD'] })
   );
 }
+

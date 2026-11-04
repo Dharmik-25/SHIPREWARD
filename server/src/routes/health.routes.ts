@@ -71,3 +71,4 @@ healthRouter.get('/health', async (req: Request, res: Response) => {
     });
   }
 });
+

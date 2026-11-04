@@ -92,3 +92,4 @@ export async function triggerSimulation(payload: any): Promise<any> {
   }
   return res.json();
 }
+

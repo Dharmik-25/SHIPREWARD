@@ -209,9 +209,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 <div>
                   <div className="font-mono font-medium text-slate-200 flex items-center gap-2">
                     <span>PR #{c.prNumber}: {c.prTitle.length > 28 ? c.prTitle.slice(0, 28) + '...' : c.prTitle}</span>
-                    {c.isDemo && (
-                      <span className="px-1.5 py-0.2 rounded bg-slate-800 border border-slate-700 text-slate-400 text-[9px]">
-                        DEMO
+                    {c.isDemo ? (
+                      <span className="px-1.5 py-0.2 rounded bg-slate-800 border border-slate-700 text-slate-400 text-[9px] font-mono">
+                        DEMO SEED
+                      </span>
+                    ) : (
+                      <span className="px-1.5 py-0.2 rounded bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 text-[9px] font-mono font-bold">
+                        LIVE GITHUB
                       </span>
                     )}
                   </div>
@@ -244,3 +248,4 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     </div>
   );
 };
+

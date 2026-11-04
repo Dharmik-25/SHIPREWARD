@@ -57,6 +57,12 @@ export interface Contribution {
     checkSuiteResults?: string;
     maintainerHandle?: string;
     ruleChecks?: Record<string, boolean>;
+    recipient?: {
+      email?: string;
+      phone?: string;
+    };
+    hasTestFiles?: boolean;
+    approvingMaintainers?: string[];
   };
   aiExplanation?: string;
   isDemo: boolean;
@@ -169,3 +175,4 @@ export interface SystemHealth {
     fraudPreventedCount: number;
   };
 }
+

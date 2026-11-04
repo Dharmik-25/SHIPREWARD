@@ -146,3 +146,4 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ health }) => {
     </div>
   );
 };
+

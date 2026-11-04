@@ -103,3 +103,4 @@ export const CommerceView: React.FC<CommerceViewProps> = ({ products, health }) 
     </div>
   );
 };
+

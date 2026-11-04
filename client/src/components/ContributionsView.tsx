@@ -42,21 +42,22 @@ export const ContributionsView: React.FC<ContributionsViewProps> = ({ contributi
             <div className="bg-[#14161D] border border-[#20242F] rounded-xl p-1 flex text-xs font-mono">
               <button
                 onClick={() => setDemoFilter('ALL')}
-                className={`px-2.5 py-1 rounded-lg cursor-pointer ${demoFilter === 'ALL' ? 'bg-[#202430] text-slate-200' : 'text-slate-400'}`}
+                className={`px-3 py-1 rounded-lg cursor-pointer transition-all ${demoFilter === 'ALL' ? 'bg-[#202430] text-slate-100 font-bold' : 'text-slate-400 hover:text-slate-200'}`}
               >
-                All
+                All ({contributions.length})
               </button>
               <button
                 onClick={() => setDemoFilter('LIVE')}
-                className={`px-2.5 py-1 rounded-lg cursor-pointer ${demoFilter === 'LIVE' ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/40' : 'text-slate-400'}`}
+                className={`px-3 py-1 rounded-lg cursor-pointer transition-all flex items-center gap-1.5 ${demoFilter === 'LIVE' ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/60 font-bold shadow-[0_0_12px_rgba(16,185,129,0.2)]' : 'text-emerald-400/80 hover:text-emerald-300'}`}
               >
-                Live Webhooks
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Live Webhooks ({contributions.filter(c => !c.isDemo).length})</span>
               </button>
               <button
                 onClick={() => setDemoFilter('DEMO')}
-                className={`px-2.5 py-1 rounded-lg cursor-pointer ${demoFilter === 'DEMO' ? 'bg-blue-950/60 text-blue-400 border border-blue-500/40' : 'text-slate-400'}`}
+                className={`px-3 py-1 rounded-lg cursor-pointer transition-all ${demoFilter === 'DEMO' ? 'bg-slate-800 text-slate-200 border border-slate-700 font-bold' : 'text-slate-400 hover:text-slate-300'}`}
               >
-                Demo Seed
+                Demo Seed ({contributions.filter(c => c.isDemo).length})
               </button>
             </div>
 
@@ -104,11 +105,16 @@ export const ContributionsView: React.FC<ContributionsViewProps> = ({ contributi
               {filtered.map((c) => (
                 <tr key={c.id} className="hover:bg-[#13151D] transition-colors">
                   <td className="py-3">
-                    <div className="font-semibold text-slate-200 flex items-center gap-1.5">
+                    <div className="font-semibold text-slate-200 flex items-center gap-2">
                       <span>PR #{c.prNumber}</span>
-                      {c.isDemo && (
-                        <span className="px-1.5 py-0.2 rounded bg-slate-800 border border-slate-700 text-slate-400 text-[9px]">
-                          DEMO
+                      {c.isDemo ? (
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-slate-400 text-[10px] font-mono">
+                          DEMO SEED
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold flex items-center gap-1 shadow-[0_0_8px_rgba(16,185,129,0.25)]">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                          LIVE GITHUB
                         </span>
                       )}
                     </div>
@@ -169,3 +175,4 @@ export const ContributionsView: React.FC<ContributionsViewProps> = ({ contributi
     </div>
   );
 };
+

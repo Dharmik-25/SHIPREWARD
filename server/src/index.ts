@@ -10,3 +10,4 @@ app.listen(PORT, () => {
   console.log(`[SHIPREWARD Server] Health check available at http://localhost:${PORT}/api/health`);
   console.log(`[SHIPREWARD Server] GitHub Webhook listening at http://localhost:${PORT}/api/webhooks/github`);
 });
+

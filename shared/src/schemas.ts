@@ -65,3 +65,4 @@ export const TriggerSimulationSchema = z.object({
   recipientEmail: z.string().email().optional(),
   recipientPhone: z.string().optional(),
 });
+
