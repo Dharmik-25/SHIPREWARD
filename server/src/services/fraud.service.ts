@@ -6,6 +6,7 @@ export interface FraudEvaluationInput {
   prNumber: number;
   contributor: string;
   maintainerHandle?: string;
+  approvingMaintainers?: string[];
   selfApproved: boolean;
   additions: number;
   deletions: number;
@@ -43,8 +44,16 @@ export class FraudService {
       riskScore += 100;
     }
 
-    // 3. Self-Approval Check
-    if (input.selfApproved || (input.maintainerHandle && input.maintainerHandle === input.contributor)) {
+    // 3. Self-Approval Check (checks selfApproved flag, maintainerHandle, or approvingMaintainers list)
+    const contributorLower = input.contributor.toLowerCase();
+    const isApproverSelf = Boolean(
+      input.approvingMaintainers?.some(m => m.toLowerCase() === contributorLower)
+    );
+    const isMaintainerHandleSelf = Boolean(
+      input.maintainerHandle && input.maintainerHandle.toLowerCase() === contributorLower
+    );
+
+    if (input.selfApproved || isMaintainerHandleSelf || isApproverSelf) {
       flags.push('SELF_APPROVAL_DETECTED');
       riskScore += 80;
     }

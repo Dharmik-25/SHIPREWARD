@@ -236,6 +236,40 @@ describe('Phase 2 — Real GitHub Webhook & Verification Tests', () => {
     expect(evalResult.fraudFlags).toContain('SELF_APPROVAL_DETECTED');
   });
 
+  it('Flags self-approval detected from GitHub reviews list (approvingMaintainers)', () => {
+    const policy: any = {
+      repository: 'shipreward/core-engine',
+      targetBranch: 'main',
+      minScore: 70,
+      requireCiPass: true,
+      requireMaintainerApproval: true,
+      allowSelfApproval: false,
+    };
+
+    // Contributor claims selfApproved is false, but author appears in approvingMaintainers
+    const input: any = {
+      repository: 'shipreward/core-engine',
+      prNumber: 307,
+      prTitle: 'fix(core): concurrency fix',
+      contributor: 'contributor-dan',
+      approvingMaintainers: ['contributor-dan'], // Author approved their own PR!
+      selfApproved: false,
+      baseBranch: 'main',
+      merged: true,
+      ciStatus: 'passed',
+      maintainerApproved: true,
+      additions: 25,
+      deletions: 5,
+      changedFilesCount: 2,
+    };
+
+    const evalResult = EvaluationService.evaluateContribution(input, policy);
+    expect(evalResult.status).toBe('FRAUD_FLAGGED');
+    expect(evalResult.fraudFlags).toContain('SELF_APPROVAL_DETECTED');
+    expect(evalResult.ruleChecks.notSelfApproved).toBe(false);
+    expect(evalResult.ruleChecks.maintainerApproved).toBe(false);
+  });
+
   // 7. Contributor to Recipient Mapping
   it('Maps contributor username to configured reward email/phone', async () => {
     // Set recipient mapping

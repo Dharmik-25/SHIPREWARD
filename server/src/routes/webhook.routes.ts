@@ -25,8 +25,8 @@ webhookRouter.get('/github/repo-status', async (req: Request, res: Response) => 
   res.json({
     repository: repo,
     ...access,
-    tokenConfigured: Boolean(process.env.GITHUB_TOKEN),
-    webhookSecretConfigured: Boolean(process.env.GITHUB_WEBHOOK_SECRET)
+    tokenConfigured: Boolean(process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN.trim().length > 0),
+    webhookSecretConfigured: Boolean(process.env.GITHUB_WEBHOOK_SECRET && process.env.GITHUB_WEBHOOK_SECRET.trim().length > 0)
   });
 });
 
