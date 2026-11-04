@@ -37,6 +37,7 @@ export class EvaluationService {
       prNumber: input.prNumber,
       contributor: input.contributor,
       maintainerHandle: input.maintainerHandle,
+      approvingMaintainers: input.approvingMaintainers,
       selfApproved: input.selfApproved,
       additions: input.additions,
       deletions: input.deletions,
@@ -45,12 +46,22 @@ export class EvaluationService {
 
     const fraudResult = FraudService.evaluate(fraudInput);
 
+    // Filter external maintainer approvals (excluding the PR author)
+    const contributorLower = input.contributor.toLowerCase();
+    const externalApprovers = (input.approvingMaintainers || [])
+      .filter(m => m.toLowerCase() !== contributorLower);
+
+    const isSelfApproved = input.selfApproved || fraudResult.flags.includes('SELF_APPROVAL_DETECTED');
+    const hasExplicitApprovers = Array.isArray(input.approvingMaintainers) && input.approvingMaintainers.length > 0;
+    const hasValidMaintainerApproval = input.maintainerApproved && 
+      (hasExplicitApprovers ? externalApprovers.length > 0 : !isSelfApproved);
+
     const ruleChecks: Record<string, boolean> = {
       repoAllowlisted: input.repository.toLowerCase() === policy.repository.toLowerCase(),
       mergedIntoTarget: input.merged && input.baseBranch === policy.targetBranch,
       ciChecksPassed: !policy.requireCiPass || input.ciStatus === 'passed',
-      maintainerApproved: !policy.requireMaintainerApproval || input.maintainerApproved,
-      notSelfApproved: policy.allowSelfApproval || !input.selfApproved,
+      maintainerApproved: !policy.requireMaintainerApproval || hasValidMaintainerApproval,
+      notSelfApproved: policy.allowSelfApproval || !isSelfApproved,
       noDuplicate: !fraudResult.flags.includes('DUPLICATE_REWARD_CLAIM_PREVENTED'),
     };
 
