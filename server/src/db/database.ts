@@ -3,13 +3,16 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const DB_DIR = path.resolve(__dirname, '../../data');
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
-}
 
-const DB_PATH = process.env.DATABASE_PATH 
-  ? path.resolve(process.env.DATABASE_PATH)
-  : path.join(DB_DIR, 'shipreward.db');
+const rawDbPath = process.env.DATABASE_PATH || './data/shipreward.db';
+const DB_PATH = path.isAbsolute(rawDbPath)
+  ? rawDbPath
+  : path.resolve(process.cwd(), rawDbPath);
+
+const targetDir = path.dirname(DB_PATH);
+if (!fs.existsSync(targetDir)) {
+  fs.mkdirSync(targetDir, { recursive: true });
+}
 
 export const db = new DatabaseSync(DB_PATH);
 

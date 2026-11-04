@@ -60,13 +60,15 @@ export interface GitHubEvidence {
 
 export class GitHubService {
   private static getHeaders(token?: string): Record<string, string> {
-    const ghToken = token || process.env.GITHUB_TOKEN;
+    const ghToken = (token || process.env.GITHUB_TOKEN || '').trim();
     const headers: Record<string, string> = {
       'Accept': 'application/vnd.github.v3+json',
       'User-Agent': 'SHIPREWARD-Verification-Agent/2.0'
     };
     if (ghToken) {
-      headers['Authorization'] = `Bearer ${ghToken}`;
+      headers['Authorization'] = ghToken.startsWith('Bearer ') || ghToken.startsWith('token ') 
+        ? ghToken 
+        : `Bearer ${ghToken}`;
     }
     return headers;
   }
@@ -80,17 +82,18 @@ export class GitHubService {
     defaultBranch?: string;
     error?: string;
   }> {
-    const token = process.env.GITHUB_TOKEN;
+    const token = (process.env.GITHUB_TOKEN || '').trim();
+    const hasToken = token.length > 0;
     try {
       const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
         headers: this.getHeaders(token),
-        signal: AbortSignal.timeout(6000)
+        signal: AbortSignal.timeout(8000)
       });
 
       if (!res.ok) {
         return {
           accessible: false,
-          hasToken: Boolean(token),
+          hasToken,
           error: `GitHub API returned ${res.status}: ${res.statusText}`
         };
       }
@@ -98,13 +101,13 @@ export class GitHubService {
       const data = await res.json() as any;
       return {
         accessible: true,
-        hasToken: Boolean(token),
+        hasToken,
         defaultBranch: data.default_branch || 'main'
       };
     } catch (err: any) {
       return {
         accessible: false,
-        hasToken: Boolean(token),
+        hasToken,
         error: err.message
       };
     }
