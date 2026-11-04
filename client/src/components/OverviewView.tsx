@@ -95,12 +95,51 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </div>
 
           <div className="bg-[#14161D] border border-[#20242F] p-3 rounded-xl">
-            <div className="text-[11px] text-slate-500 font-mono uppercase">Active Tiers</div>
-            <div className="text-xl font-bold text-slate-100 font-mono mt-1">
-              {programmes.length} <span className="text-xs text-slate-400 font-normal">programmes</span>
+            <div className="text-[11px] text-slate-500 font-mono uppercase">Pending Approvals</div>
+            <div className="text-xl font-bold text-amber-400 font-mono mt-1">
+              {contributions.filter(c => c.approvalStatus === 'PENDING_APPROVAL').length} <span className="text-xs text-slate-400 font-normal">queued</span>
             </div>
-            <div className="text-[10px] text-emerald-400 mt-0.5">
-              Builder, Campus, Enterprise
+            <div className="text-[10px] text-amber-400/80 mt-0.5">
+              High-value / borderline reviews
+            </div>
+          </div>
+        </div>
+
+        {/* 3 Programme Tiers Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-2 font-mono text-xs">
+          <div className="bg-[#13151D] border border-blue-900/40 p-3 rounded-xl">
+            <div className="flex items-center justify-between">
+              <span className="text-blue-400 font-bold">CAMPUS TIER</span>
+              <span className="text-[10px] text-slate-500">Academic</span>
+            </div>
+            <div className="text-slate-300 text-[11px] mt-1 font-sans">Lab milestones, test suites & rubric evaluations</div>
+            <div className="mt-2 text-[10px] text-slate-400 flex justify-between">
+              <span>Pool: $25.00/day</span>
+              <span className="text-blue-300">Prof. Sign-off</span>
+            </div>
+          </div>
+
+          <div className="bg-[#13151D] border border-emerald-900/40 p-3 rounded-xl">
+            <div className="flex items-center justify-between">
+              <span className="text-emerald-400 font-bold">BUILDER TIER</span>
+              <span className="text-[10px] text-emerald-400 font-semibold">Active Live</span>
+            </div>
+            <div className="text-slate-300 text-[11px] mt-1 font-sans">Open-source PRs, CI passing & instant Bitrefill balance</div>
+            <div className="mt-2 text-[10px] text-slate-400 flex justify-between">
+              <span>Pool: $50.00/day</span>
+              <span className="text-emerald-300">Autonomous</span>
+            </div>
+          </div>
+
+          <div className="bg-[#13151D] border border-purple-900/40 p-3 rounded-xl">
+            <div className="flex items-center justify-between">
+              <span className="text-purple-400 font-bold">ENTERPRISE TIER</span>
+              <span className="text-[10px] text-slate-500">Corporate</span>
+            </div>
+            <div className="text-slate-300 text-[11px] mt-1 font-sans">Strict maintainer approvals, audit trail & departmental caps</div>
+            <div className="mt-2 text-[10px] text-slate-400 flex justify-between">
+              <span>Pool: $200.00/day</span>
+              <span className="text-purple-300">Manager Sign-off</span>
             </div>
           </div>
         </div>
@@ -204,7 +243,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               <div className="flex items-center gap-2.5">
                 <div className={`w-2 h-2 rounded-full ${
                   c.verificationStatus === 'VERIFIED' ? 'bg-emerald-400' :
-                  c.verificationStatus === 'FRAUD_FLAGGED' ? 'bg-rose-500' : 'bg-amber-400'
+                  c.verificationStatus === 'FRAUD_FLAGGED' ? 'bg-rose-500' :
+                  c.verificationStatus === 'REJECTED' ? 'bg-red-400' :
+                  c.verificationStatus === 'VERIFYING' ? 'bg-sky-400 animate-pulse' :
+                  c.verificationStatus === 'RECEIVED' ? 'bg-indigo-400' :
+                  'bg-amber-400'
                 }`} />
                 <div>
                   <div className="font-mono font-medium text-slate-200 flex items-center gap-2">
@@ -228,7 +271,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               <div className="text-right">
                 <div className={`font-mono font-medium ${
                   c.verificationStatus === 'VERIFIED' ? 'text-emerald-400' :
-                  c.verificationStatus === 'FRAUD_FLAGGED' ? 'text-rose-400' : 'text-amber-400'
+                  c.verificationStatus === 'FRAUD_FLAGGED' ? 'text-rose-400' :
+                  c.verificationStatus === 'REJECTED' ? 'text-red-400' :
+                  c.verificationStatus === 'VERIFYING' ? 'text-sky-400' :
+                  c.verificationStatus === 'RECEIVED' ? 'text-indigo-400' :
+                  'text-amber-400'
                 }`}>
                   {c.verificationStatus}
                 </div>

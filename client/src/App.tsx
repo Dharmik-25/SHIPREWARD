@@ -137,6 +137,9 @@ export const App: React.FC = () => {
             <CommerceView 
               products={products}
               health={health}
+              rewards={rewards}
+              contributions={contributions}
+              onRefresh={handleRefreshAll}
             />
           )}
 

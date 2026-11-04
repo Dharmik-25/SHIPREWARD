@@ -4,6 +4,7 @@ import { WebhookService } from '../services/webhook.service';
 import { EvaluationService, ContributionInput } from '../services/evaluation.service';
 import { GitHubService } from '../services/github.service';
 import { AuditService } from '../services/audit.service';
+import { BitrefillService } from '../services/bitrefill.service';
 import { TriggerSimulationSchema, ProgramPolicy } from '@shipreward/shared';
 import crypto from 'node:crypto';
 
@@ -127,6 +128,8 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
       id: programRow.id,
       name: programRow.name,
       tier: programRow.tier,
+      owner: programRow.owner || 'Community',
+      fundingSource: programRow.funding_source || 'Treasury',
       description: programRow.description,
       repository: programRow.repository,
       targetBranch: programRow.target_branch,
@@ -135,6 +138,7 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
       requireMaintainerApproval: Boolean(programRow.require_maintainer_approval),
       allowSelfApproval: Boolean(programRow.allow_self_approval),
       perContributionRewardUsd: programRow.per_contribution_reward_usd,
+      approvalThresholdUsd: programRow.approval_threshold_usd ?? 1.00,
       dailyBudgetUsd: programRow.daily_budget_usd,
       totalBudgetUsd: programRow.total_budget_usd,
       spentTodayUsd: programRow.spent_today_usd,
@@ -142,6 +146,7 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
       allowedProductIds: JSON.parse(programRow.allowed_product_ids || '[]'),
       autoFulfill: Boolean(programRow.auto_fulfill),
       active: Boolean(programRow.active),
+      rubricCriteria: programRow.rubric_criteria ? JSON.parse(programRow.rubric_criteria) : [],
       createdAt: programRow.created_at,
       updatedAt: programRow.updated_at
     };
@@ -160,9 +165,9 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
     // SCENARIO A: PR OPENED or SYNCHRONIZED
     if (action === 'opened' || action === 'synchronize') {
       const contribId = existing?.id || ('contrib_' + crypto.randomBytes(6).toString('hex'));
-      const status = 'PENDING';
+      const status = 'RECEIVED';
       const explanation = action === 'opened'
-        ? `PR #${prNumber} opened by @${contributor}. Waiting for review, passing CI checks, and merge into '${policy.targetBranch}'.`
+        ? `PR #${prNumber} received from @${contributor}. Waiting for review, CI checks, and merge into '${policy.targetBranch}'.`
         : `PR #${prNumber} synchronized with new commits. Waiting for merge.`;
 
       if (existing) {
@@ -227,7 +232,7 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
         decision: 'PROCESSED',
         programId: policy.id,
         contributionId: contribId,
-        details: `Recorded PR #${prNumber} (${action}) in PENDING status.`
+        details: `Recorded PR #${prNumber} (${action}) in RECEIVED status.`
       });
 
       res.status(200).json({ status, message: explanation, contributionId: contribId });
@@ -281,96 +286,15 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
         return;
       }
 
-      // PR IS MERGED: Collect ground-truth evidence via GitHub REST API
-      let ciStatus: 'passed' | 'failed' | 'pending' = 'passed';
-      let maintainerApproved = true;
-      let selfApproved = false;
-      let hasTestFiles = false;
-      let commitCount = 1;
-      let approvingMaintainers: string[] = [];
-      let extractedRecipient = GitHubService.extractRecipientDirective(pr.body);
-
-      // Attempt to enrich with live GitHub API if token or network available
-      if (owner && repoName) {
-        try {
-          const evidence = await GitHubService.collectEvidence(owner, repoName, prNumber);
-          approvingMaintainers = evidence.approvingMaintainers;
-          maintainerApproved = evidence.approvingMaintainers.length > 0;
-          selfApproved = evidence.approvingMaintainers.includes(contributor);
-          ciStatus = evidence.ciPassed ? 'passed' : 'failed';
-          hasTestFiles = evidence.hasTestFiles;
-          commitCount = evidence.commits.length || 1;
-          if (evidence.extractedRecipient) {
-            extractedRecipient = evidence.extractedRecipient;
-          }
-        } catch (fetchErr: any) {
-          console.warn(`[GitHubService] Could not fetch remote evidence for PR #${prNumber}: ${fetchErr.message}. Falling back to webhook payload.`);
-        }
-      }
-
-      // Check stored recipient mapping
-      const storedRecipient = db.prepare('SELECT * FROM contributor_recipients WHERE LOWER(contributor_username) = LOWER(?)').get(contributor) as any;
-      if (storedRecipient) {
-        extractedRecipient = {
-          email: storedRecipient.recipient_email || extractedRecipient?.email,
-          phone: storedRecipient.recipient_phone || extractedRecipient?.phone
-        };
-      }
-
-      const contribInput: ContributionInput = {
-        repository: repoFullName,
-        prNumber,
-        prTitle,
-        contributor,
-        baseBranch,
-        merged: true,
-        ciStatus,
-        maintainerApproved,
-        selfApproved,
-        approvingMaintainers,
-        hasTestFiles,
-        commitCount,
-        additions: pr.additions || 0,
-        deletions: pr.deletions || 0,
-        changedFilesCount: pr.changed_files || 1,
-      };
-
-      const evalResult = EvaluationService.evaluateContribution(contribInput, policy);
-
-      const evidencePayload = {
-        ruleChecks: evalResult.ruleChecks,
-        approvingMaintainers,
-        hasTestFiles,
-        commitCount,
-        recipient: extractedRecipient
-      };
-
-      // Persist verified or flagged contribution
+      // PR IS MERGED: First update or insert record with status 'VERIFYING'
       if (existing) {
         db.prepare(`
           UPDATE contributions
-          SET pr_title = ?, changed_files_count = ?, additions = ?, deletions = ?,
-              merged_at = ?, ci_status = ?, maintainer_approved = ?, self_approved = ?,
-              evaluation_score = ?, verification_status = ?, fraud_flags = ?,
-              evidence_details = ?, ai_explanation = ?, updated_at = ?
+          SET verification_status = 'VERIFYING',
+              ai_explanation = 'Verifying contribution evidence from GitHub REST API...',
+              updated_at = ?
           WHERE id = ?
-        `).run(
-          prTitle,
-          pr.changed_files || 0,
-          pr.additions || 0,
-          pr.deletions || 0,
-          pr.merged_at || now,
-          ciStatus,
-          maintainerApproved ? 1 : 0,
-          selfApproved ? 1 : 0,
-          evalResult.score,
-          evalResult.status,
-          JSON.stringify(evalResult.fraudFlags),
-          JSON.stringify(evidencePayload),
-          evalResult.explanation,
-          now,
-          contribId
-        );
+        `).run(now, contribId);
       } else {
         db.prepare(`
           INSERT INTO contributions (
@@ -382,33 +306,146 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
             is_demo, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          contribId,
-          policy.id,
-          deliveryId,
-          prNumber,
-          prTitle,
-          prUrl,
-          contributor,
-          pr.user?.avatar_url || null,
-          baseBranch,
-          headBranch,
-          pr.changed_files || 0,
-          pr.additions || 0,
-          pr.deletions || 0,
-          pr.merged_at || now,
-          ciStatus,
-          maintainerApproved ? 1 : 0,
-          selfApproved ? 1 : 0,
-          evalResult.score,
-          evalResult.status,
-          JSON.stringify(evalResult.fraudFlags),
-          JSON.stringify(evidencePayload),
-          evalResult.explanation,
-          0, // LIVE GITHUB EVENT
-          now,
-          now
+          contribId, policy.id, deliveryId, prNumber, prTitle, prUrl,
+          contributor, pr.user?.avatar_url || null, baseBranch, headBranch,
+          pr.changed_files || 0, pr.additions || 0, pr.deletions || 0, pr.merged_at || now,
+          'pending', 0, 0, 0, 'VERIFYING', JSON.stringify([]),
+          JSON.stringify({ status: 'fetching_evidence' }), 'Verifying contribution evidence from GitHub REST API...',
+          0, now, now
         );
       }
+
+      // Collect ground-truth evidence via GitHub REST API (No silent fallback to demo data)
+      let evidence: any;
+      try {
+        if (!owner || !repoName) {
+          throw new Error('Repository owner or name is missing from pull_request payload');
+        }
+        evidence = await GitHubService.collectEvidence(owner, repoName, prNumber);
+      } catch (fetchErr: any) {
+        const errorMsg = `Failed to fetch ground-truth evidence from GitHub API: ${fetchErr.message}. Marked for manual review.`;
+        console.warn(`[GitHubService] ${errorMsg}`);
+
+        db.prepare(`
+          UPDATE contributions
+          SET verification_status = 'NEEDS_REVIEW',
+              fraud_flags = ?,
+              ai_explanation = ?,
+              updated_at = ?
+          WHERE id = ?
+        `).run(
+          JSON.stringify(['EVIDENCE_FETCH_FAILED']),
+          errorMsg,
+          new Date().toISOString(),
+          contribId
+        );
+
+        AuditService.log({
+          eventType: 'CONTRIBUTION_EVALUATED',
+          actor: 'github_webhook',
+          decision: 'REVIEW_REQUIRED',
+          programId: policy.id,
+          contributionId: contribId,
+          details: errorMsg
+        });
+
+        res.status(200).json({
+          status: 'NEEDS_REVIEW',
+          contributionId: contribId,
+          score: 0,
+          explanation: errorMsg,
+          requiresManualReview: true,
+          purchaseInitiated: false
+        });
+        return;
+      }
+
+      const approvingMaintainers: string[] = evidence.approvingMaintainers || [];
+      const maintainerApproved = approvingMaintainers.length > 0;
+      const selfApproved = approvingMaintainers.includes(contributor);
+      const ciStatus: 'passed' | 'failed' | 'pending' = evidence.ciPassed ? 'passed' : 'failed';
+      const hasTestFiles = evidence.hasTestFiles;
+      const commitCount = evidence.commits?.length || 1;
+      let extractedRecipient = evidence.extractedRecipient || GitHubService.extractRecipientDirective(pr.body);
+
+      // Check stored recipient mapping
+      const storedRecipient = db.prepare('SELECT * FROM contributor_recipients WHERE LOWER(contributor_username) = LOWER(?)').get(contributor) as any;
+      if (storedRecipient) {
+        extractedRecipient = {
+          email: storedRecipient.recipient_email || extractedRecipient?.email,
+          phone: storedRecipient.recipient_phone || extractedRecipient?.phone
+        };
+      }
+
+      const additions = typeof evidence.pr?.additions === 'number' ? evidence.pr.additions : (pr.additions || 0);
+      const deletions = typeof evidence.pr?.deletions === 'number' ? evidence.pr.deletions : (pr.deletions || 0);
+      const changedFilesCount = typeof evidence.pr?.changedFiles === 'number' ? evidence.pr.changedFiles : (pr.changed_files || 1);
+      const resolvedPrTitle = evidence.pr?.title || prTitle;
+      const resolvedBaseBranch = evidence.pr?.baseRef || baseBranch;
+
+      const contribInput: ContributionInput = {
+        repository: repoFullName,
+        prNumber,
+        prTitle: resolvedPrTitle,
+        contributor,
+        baseBranch: resolvedBaseBranch,
+        merged: Boolean(evidence.pr?.merged ?? pr.merged),
+        ciStatus,
+        maintainerApproved,
+        selfApproved,
+        approvingMaintainers,
+        hasTestFiles,
+        commitCount,
+        additions,
+        deletions,
+        changedFilesCount,
+      };
+
+      const evalResult = EvaluationService.evaluateContribution(contribInput, policy);
+
+      const evidencePayload = {
+        ruleChecks: evalResult.ruleChecks,
+        rubricEvaluation: evalResult.rubricEvaluation,
+        approvingMaintainers,
+        hasTestFiles,
+        commitCount,
+        recipient: extractedRecipient,
+        commits: (evidence.commits || []).map((c: any) => ({ sha: c.sha ? c.sha.slice(0, 7) : '', message: c.message })),
+        files: (evidence.files || []).map((f: any) => f.filename)
+      };
+
+      const finishTime = new Date().toISOString();
+      db.prepare(`
+        UPDATE contributions
+        SET pr_title = ?, changed_files_count = ?, additions = ?, deletions = ?,
+            merged_at = ?, ci_status = ?, maintainer_approved = ?, self_approved = ?,
+            evaluation_score = ?, verification_status = ?, fraud_flags = ?,
+            evidence_details = ?, ai_explanation = ?, reward_tier = ?,
+            suggested_reward_usd = ?, suggested_product_id = ?,
+            suggested_package_value = ?, approval_status = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        resolvedPrTitle,
+        changedFilesCount,
+        additions,
+        deletions,
+        evidence.pr?.mergedAt || pr.merged_at || finishTime,
+        ciStatus,
+        maintainerApproved ? 1 : 0,
+        selfApproved ? 1 : 0,
+        evalResult.score,
+        evalResult.status,
+        JSON.stringify(evalResult.fraudFlags),
+        JSON.stringify(evidencePayload),
+        evalResult.explanation,
+        evalResult.rewardTier,
+        evalResult.suggestedRewardUsd,
+        evalResult.suggestedProductId,
+        evalResult.suggestedPackageValue,
+        evalResult.approvalStatus,
+        finishTime,
+        contribId
+      );
 
       AuditService.log({
         eventType: evalResult.status === 'FRAUD_FLAGGED' ? 'FRAUD_PREVENTED' : 'CONTRIBUTION_EVALUATED',
@@ -416,18 +453,60 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
         decision: evalResult.status === 'VERIFIED' ? 'AUTHORIZED' : 'REVIEW_REQUIRED',
         programId: policy.id,
         contributionId: contribId,
-        details: `PR #${prNumber} evaluated: status=${evalResult.status}, score=${evalResult.score}. ${evalResult.explanation}`
+        details: `PR #${prNumber} evaluated: status=${evalResult.status}, score=${evalResult.score}, tier=${evalResult.rewardTier}. ${evalResult.explanation}`
       });
 
-      // NOTE: In Phase 2, we NEVER initiate a Bitrefill purchase automatically.
-      // Verified contributions are saved and ready for Phase 3/4 purchase gating.
+      // Automated Fulfillment Execution when policy permits auto-fulfillment:
+      let purchaseResult = null;
+      let purchaseInitiated = false;
+
+      if (policy.autoFulfill && evalResult.status === 'VERIFIED' && evalResult.approvalStatus === 'NOT_REQUIRED') {
+        const autoPurchaseAllowed = process.env.AUTO_PURCHASE_ENABLED === 'true';
+        if (autoPurchaseAllowed) {
+          try {
+            purchaseResult = await BitrefillService.executePurchase({
+              contributionId: contribId,
+              productId: evalResult.suggestedProductId || 'swiggy-money-india',
+              packageValue: evalResult.suggestedPackageValue || '50',
+              intentPurpose: `Autonomous reward for PR #${prNumber}`,
+              manualApproval: false,
+              confirmedByAdmin: true,
+              approvedBy: 'autonomous_engine'
+            });
+            purchaseInitiated = true;
+          } catch (purchaseErr: any) {
+            AuditService.log({
+              eventType: 'PURCHASE_FAILED',
+              actor: 'autonomous_engine',
+              decision: 'ERROR',
+              programId: policy.id,
+              contributionId: contribId,
+              details: `Autonomous fulfillment failed: ${purchaseErr.message}`
+            });
+          }
+        } else {
+          AuditService.log({
+            eventType: 'POLICY_AUTHORIZED',
+            actor: 'autonomous_engine',
+            decision: 'REVIEW_REQUIRED',
+            programId: policy.id,
+            contributionId: contribId,
+            details: `Auto-purchase disabled by spend guardrails (AUTO_PURCHASE_ENABLED=false). Awaiting administrative sign-off.`
+          });
+        }
+      }
 
       res.status(200).json({
         status: evalResult.status,
         contributionId: contribId,
         score: evalResult.score,
+        rewardTier: evalResult.rewardTier,
+        suggestedRewardUsd: evalResult.suggestedRewardUsd,
+        approvalStatus: evalResult.approvalStatus,
         ruleChecks: evalResult.ruleChecks,
-        explanation: evalResult.explanation
+        explanation: evalResult.explanation,
+        purchaseInitiated,
+        purchase: purchaseResult
       });
       return;
     }
@@ -459,6 +538,8 @@ webhookRouter.post('/triggers/simulate', async (req: Request, res: Response) => 
     id: programRow.id,
     name: programRow.name,
     tier: programRow.tier,
+    owner: programRow.owner || 'Community',
+    fundingSource: programRow.funding_source || 'Treasury',
     description: programRow.description,
     repository: programRow.repository,
     targetBranch: programRow.target_branch,
@@ -467,6 +548,7 @@ webhookRouter.post('/triggers/simulate', async (req: Request, res: Response) => 
     requireMaintainerApproval: Boolean(programRow.require_maintainer_approval),
     allowSelfApproval: Boolean(programRow.allow_self_approval),
     perContributionRewardUsd: programRow.per_contribution_reward_usd,
+    approvalThresholdUsd: programRow.approval_threshold_usd ?? 1.00,
     dailyBudgetUsd: programRow.daily_budget_usd,
     totalBudgetUsd: programRow.total_budget_usd,
     spentTodayUsd: programRow.spent_today_usd,
@@ -474,6 +556,7 @@ webhookRouter.post('/triggers/simulate', async (req: Request, res: Response) => 
     allowedProductIds: JSON.parse(programRow.allowed_product_ids || '[]'),
     autoFulfill: Boolean(programRow.auto_fulfill),
     active: Boolean(programRow.active),
+    rubricCriteria: programRow.rubric_criteria ? JSON.parse(programRow.rubric_criteria) : [],
     createdAt: programRow.created_at,
     updatedAt: programRow.updated_at
   };

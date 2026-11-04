@@ -42,15 +42,41 @@ export async function fetchContributions(params?: { programId?: string; status?:
   return res.json();
 }
 
-export async function approveContribution(id: string, reviewer = 'Manual Reviewer'): Promise<any> {
+export async function approveContribution(id: string, reviewer = 'Manual Reviewer', reason = 'Manual review approval', fulfillReward = false): Promise<any> {
   const res = await fetch(`${API_BASE}/contributions/${id}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reviewer })
+    body: JSON.stringify({ reviewer, reason, fulfillReward })
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.error || 'Failed to approve contribution');
+  }
+  return res.json();
+}
+
+export async function rejectContribution(id: string, reviewer = 'Manual Reviewer', reason = 'Rejected during manual review'): Promise<any> {
+  const res = await fetch(`${API_BASE}/contributions/${id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer, reason })
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Failed to reject contribution');
+  }
+  return res.json();
+}
+
+export async function claimReward(id: string, claimer: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/rewards/${id}/claim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ claimer })
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Failed to claim reward');
   }
   return res.json();
 }
@@ -89,6 +115,49 @@ export async function triggerSimulation(payload: any): Promise<any> {
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.error || 'Simulation trigger failed');
+  }
+  return res.json();
+}
+
+export async function fetchBitrefillStatus(): Promise<any> {
+  const res = await fetch(`${API_BASE}/bitrefill/status`);
+  if (!res.ok) throw new Error('Failed to fetch Bitrefill status');
+  return res.json();
+}
+
+export async function fetchGuardrails(): Promise<any> {
+  const res = await fetch(`${API_BASE}/bitrefill/guardrails`);
+  if (!res.ok) throw new Error('Failed to fetch guardrails');
+  return res.json();
+}
+
+export async function toggleEmergencyFreeze(freeze: boolean): Promise<any> {
+  const res = await fetch(`${API_BASE}/bitrefill/guardrails/freeze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ freeze })
+  });
+  if (!res.ok) throw new Error('Failed to toggle emergency freeze');
+  return res.json();
+}
+
+export async function executeReward(payload: {
+  contributionId: string;
+  productId: string;
+  packageValue: string;
+  recipientEmail?: string;
+  recipientPhone?: string;
+  manualApproval?: boolean;
+  approvedBy?: string;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE}/bitrefill/execute-reward`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || 'Failed to execute reward');
   }
   return res.json();
 }

@@ -10,6 +10,8 @@ function mapRowToProgram(r: any): ProgramPolicy {
     id: r.id,
     name: r.name,
     tier: r.tier,
+    owner: r.owner || 'Programme Lead',
+    fundingSource: r.funding_source || 'Treasury Pool',
     description: r.description,
     repository: r.repository,
     targetBranch: r.target_branch,
@@ -18,6 +20,7 @@ function mapRowToProgram(r: any): ProgramPolicy {
     requireMaintainerApproval: Boolean(r.require_maintainer_approval),
     allowSelfApproval: Boolean(r.allow_self_approval),
     perContributionRewardUsd: r.per_contribution_reward_usd,
+    approvalThresholdUsd: r.approval_threshold_usd ?? 1.0,
     dailyBudgetUsd: r.daily_budget_usd,
     totalBudgetUsd: r.total_budget_usd,
     spentTodayUsd: r.spent_today_usd,
@@ -25,6 +28,7 @@ function mapRowToProgram(r: any): ProgramPolicy {
     allowedProductIds: JSON.parse(r.allowed_product_ids || '[]'),
     autoFulfill: Boolean(r.auto_fulfill),
     active: Boolean(r.active),
+    rubricCriteria: r.rubric_criteria ? JSON.parse(r.rubric_criteria) : undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   };
@@ -65,6 +69,8 @@ programmeRouter.put('/programmes/:id', (req: Request, res: Response) => {
   db.prepare(`
     UPDATE programs
     SET name = COALESCE(?, name),
+        owner = COALESCE(?, owner),
+        funding_source = COALESCE(?, funding_source),
         description = COALESCE(?, description),
         repository = COALESCE(?, repository),
         target_branch = COALESCE(?, target_branch),
@@ -73,15 +79,19 @@ programmeRouter.put('/programmes/:id', (req: Request, res: Response) => {
         require_maintainer_approval = COALESCE(?, require_maintainer_approval),
         allow_self_approval = COALESCE(?, allow_self_approval),
         per_contribution_reward_usd = COALESCE(?, per_contribution_reward_usd),
+        approval_threshold_usd = COALESCE(?, approval_threshold_usd),
         daily_budget_usd = COALESCE(?, daily_budget_usd),
         total_budget_usd = COALESCE(?, total_budget_usd),
         allowed_product_ids = COALESCE(?, allowed_product_ids),
         auto_fulfill = COALESCE(?, auto_fulfill),
         active = COALESCE(?, active),
+        rubric_criteria = COALESCE(?, rubric_criteria),
         updated_at = ?
     WHERE id = ?
   `).run(
     data.name ?? null,
+    data.owner ?? null,
+    data.fundingSource ?? null,
     data.description ?? null,
     data.repository ?? null,
     data.targetBranch ?? null,
@@ -90,11 +100,13 @@ programmeRouter.put('/programmes/:id', (req: Request, res: Response) => {
     data.requireMaintainerApproval !== undefined ? (data.requireMaintainerApproval ? 1 : 0) : null,
     data.allowSelfApproval !== undefined ? (data.allowSelfApproval ? 1 : 0) : null,
     data.perContributionRewardUsd ?? null,
+    data.approvalThresholdUsd ?? null,
     data.dailyBudgetUsd ?? null,
     data.totalBudgetUsd ?? null,
     data.allowedProductIds ? JSON.stringify(data.allowedProductIds) : null,
     data.autoFulfill !== undefined ? (data.autoFulfill ? 1 : 0) : null,
     data.active !== undefined ? (data.active ? 1 : 0) : null,
+    data.rubricCriteria ? JSON.stringify(data.rubricCriteria) : null,
     now,
     id
   );

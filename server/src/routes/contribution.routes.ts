@@ -4,7 +4,6 @@ import { Contribution } from '@shipreward/shared';
 import { AuditService } from '../services/audit.service';
 import { BudgetService } from '../services/budget.service';
 import { BitrefillService } from '../services/bitrefill.service';
-import crypto from 'node:crypto';
 
 export const contributionRouter = Router();
 
@@ -32,6 +31,13 @@ function mapRowToContribution(r: any): Contribution {
     fraudFlags: JSON.parse(r.fraud_flags || '[]'),
     evidenceDetails: JSON.parse(r.evidence_details || '{}'),
     aiExplanation: r.ai_explanation,
+    rewardTier: r.reward_tier || 'GOOD',
+    suggestedRewardUsd: r.suggested_reward_usd ?? 0.55,
+    suggestedProductId: r.suggested_product_id || 'swiggy-money-india',
+    suggestedPackageValue: r.suggested_package_value || '50',
+    approvalStatus: r.approval_status || 'NOT_REQUIRED',
+    approvedBy: r.approved_by || null,
+    approvalReason: r.approval_reason || null,
     isDemo: Boolean(r.is_demo),
     createdAt: r.created_at,
     updatedAt: r.updated_at
@@ -39,7 +45,7 @@ function mapRowToContribution(r: any): Contribution {
 }
 
 contributionRouter.get('/contributions', (req: Request, res: Response) => {
-  const { programId, status, isDemo } = req.query;
+  const { programId, status, approvalStatus, isDemo } = req.query;
   let query = 'SELECT * FROM contributions WHERE 1=1';
   const params: any[] = [];
 
@@ -51,6 +57,10 @@ contributionRouter.get('/contributions', (req: Request, res: Response) => {
     query += ' AND verification_status = ?';
     params.push(status);
   }
+  if (approvalStatus) {
+    query += ' AND approval_status = ?';
+    params.push(approvalStatus);
+  }
   if (isDemo !== undefined) {
     query += ' AND is_demo = ?';
     params.push(isDemo === 'true' ? 1 : 0);
@@ -58,6 +68,15 @@ contributionRouter.get('/contributions', (req: Request, res: Response) => {
 
   query += ' ORDER BY created_at DESC LIMIT 100';
   const rows = db.prepare(query).all(...params) as any[];
+  res.json(rows.map(mapRowToContribution));
+});
+
+contributionRouter.get('/contributions/pending-approval', (req: Request, res: Response) => {
+  const rows = db.prepare(`
+    SELECT * FROM contributions 
+    WHERE approval_status = 'PENDING_APPROVAL' OR verification_status = 'NEEDS_REVIEW'
+    ORDER BY created_at DESC LIMIT 100
+  `).all() as any[];
   res.json(rows.map(mapRowToContribution));
 });
 
@@ -72,26 +91,26 @@ contributionRouter.get('/contributions/:id', (req: Request, res: Response) => {
 });
 
 /**
- * Manual override approval by Professor / Maintainer.
+ * POST /api/contributions/:id/approve
+ * Authenticated human approval override for borderline, high-tier or academic milestone submissions.
  */
 contributionRouter.post('/contributions/:id/approve', async (req: Request, res: Response) => {
   const id = req.params.id as string;
+  const { reviewer, reason, fulfillReward } = req.body;
+  const reviewerName = reviewer || 'Programme Coordinator';
+  const approvalReason = reason || 'Manual review sign-off based on contribution quality';
+
   const contrib = db.prepare('SELECT * FROM contributions WHERE id = ?').get(id) as any;
   if (!contrib) {
     res.status(404).json({ error: 'Contribution not found' });
     return;
   }
 
-  if (contrib.verification_status === 'VERIFIED') {
-    res.status(400).json({ error: 'Contribution is already verified and rewarded.' });
-    return;
-  }
-
   const program = db.prepare('SELECT * FROM programs WHERE id = ?').get(contrib.program_id) as any;
-  const rewardAmount = program ? program.per_contribution_reward_usd : 5.0;
+  const rewardAmount = contrib.suggested_reward_usd || (program ? program.per_contribution_reward_usd : 0.55);
 
-  // Check budget authorization
-  const authCheck = BudgetService.authorizeSpend(contrib.program_id, rewardAmount);
+  // Validate spend authorization against programme budget
+  const authCheck = BudgetService.authorizeSpend(contrib.program_id, rewardAmount, Boolean(contrib.is_demo));
   if (!authCheck.authorized) {
     res.status(400).json({ error: `Cannot approve: ${authCheck.reason}` });
     return;
@@ -101,75 +120,91 @@ contributionRouter.post('/contributions/:id/approve', async (req: Request, res: 
   db.prepare(`
     UPDATE contributions
     SET verification_status = 'VERIFIED',
+        approval_status = 'APPROVED',
+        approved_by = ?,
+        approval_reason = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(now, contrib.id);
+  `).run(reviewerName, approvalReason, now, contrib.id);
 
   AuditService.log({
     eventType: 'POLICY_AUTHORIZED',
-    actor: req.body.reviewer || 'maintainer_manual_override',
+    actor: reviewerName,
     decision: 'AUTHORIZED',
     programId: contrib.program_id,
     contributionId: contrib.id,
     costUsd: rewardAmount,
-    details: `Manual approval granted for PR #${contrib.pr_number} by maintainer/professor.`
+    details: `Manual approval granted for PR #${contrib.pr_number} by ${reviewerName}: ${approvalReason}`
   });
 
-  // Fulfill reward
-  try {
-    const defaultProduct = 'swiggy-india';
-    const purchaseResult = await BitrefillService.executePurchase({
-      productId: defaultProduct,
-      packageValue: '500',
-      intentPurpose: `Manual reward payout for PR #${contrib.pr_number}`,
-      isDemo: Boolean(contrib.is_demo)
-    });
-
-    const rewardId = 'rew_' + crypto.randomBytes(6).toString('hex');
-    db.prepare(`
-      INSERT INTO rewards (
-        id, contribution_id, program_id, contributor, recipient_email,
-        product_id, product_name, package_value, package_currency, price_usd,
-        invoice_id, invoice_status, order_id, order_status, masked_voucher_code,
-        redemption_instructions, is_demo, created_at, delivered_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      rewardId,
-      contrib.id,
-      contrib.program_id,
-      contrib.contributor,
-      null,
-      defaultProduct,
-      purchaseResult.productName,
-      purchaseResult.packageValue,
-      purchaseResult.packageCurrency,
-      purchaseResult.priceUsd,
-      purchaseResult.invoiceId,
-      purchaseResult.invoiceStatus,
-      purchaseResult.orderId,
-      purchaseResult.orderStatus,
-      purchaseResult.maskedVoucherCode,
-      purchaseResult.redemptionInstructions,
-      contrib.is_demo,
-      now,
-      purchaseResult.deliveredAt
-    );
-
-    BudgetService.recordSpend(contrib.program_id, purchaseResult.priceUsd, Boolean(contrib.is_demo));
-
-    AuditService.log({
-      eventType: 'BITREFILL_ORDER_DELIVERED',
-      actor: 'bitrefill_fulfillment',
-      decision: 'PROCESSED',
-      programId: contrib.program_id,
-      contributionId: contrib.id,
-      rewardId,
-      costUsd: purchaseResult.priceUsd,
-      details: `Fulfilled manual reward for PR #${contrib.pr_number} via Bitrefill invoice ${purchaseResult.invoiceId}. Delivered state reached.`
-    });
-
-    res.json({ message: 'Contribution approved and reward fulfilled', rewardId });
-  } catch (err: any) {
-    res.status(500).json({ error: `Reward fulfillment error: ${err.message}` });
+  // If demo contribution and fulfillment requested, fulfill simulated reward
+  let purchaseResult = null;
+  if (fulfillReward && contrib.is_demo) {
+    try {
+      purchaseResult = await BitrefillService.executePurchase({
+        contributionId: contrib.id,
+        productId: contrib.suggested_product_id || 'swiggy-money-india',
+        packageValue: contrib.suggested_package_value || '50',
+        intentPurpose: `Approved reward for PR #${contrib.pr_number}`,
+        manualApproval: true,
+        confirmedByAdmin: true,
+        approvedBy: reviewerName,
+        isDemo: true
+      });
+    } catch (err: any) {
+      // Fulfillment failure in demo is non-fatal to the approval
+    }
   }
+
+  res.json({
+    success: true,
+    message: `Contribution PR #${contrib.pr_number} successfully verified and approved.`,
+    approvalStatus: 'APPROVED',
+    contribution: mapRowToContribution(db.prepare('SELECT * FROM contributions WHERE id = ?').get(contrib.id)),
+    purchase: purchaseResult
+  });
+});
+
+/**
+ * POST /api/contributions/:id/reject
+ * Reject a contribution during manual review.
+ */
+contributionRouter.post('/contributions/:id/reject', (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  const { reviewer, reason } = req.body;
+  const reviewerName = reviewer || 'Programme Coordinator';
+  const rejectionReason = reason || 'Contribution did not meet rubric standards during review.';
+
+  const contrib = db.prepare('SELECT * FROM contributions WHERE id = ?').get(id) as any;
+  if (!contrib) {
+    res.status(404).json({ error: 'Contribution not found' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE contributions
+    SET verification_status = 'REJECTED',
+        approval_status = 'REJECTED',
+        approved_by = ?,
+        approval_reason = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(reviewerName, rejectionReason, now, contrib.id);
+
+  AuditService.log({
+    eventType: 'POLICY_AUTHORIZED',
+    actor: reviewerName,
+    decision: 'REJECTED',
+    programId: contrib.program_id,
+    contributionId: contrib.id,
+    details: `Contribution PR #${contrib.pr_number} rejected by ${reviewerName}: ${rejectionReason}`
+  });
+
+  res.json({
+    success: true,
+    message: `Contribution PR #${contrib.pr_number} rejected.`,
+    approvalStatus: 'REJECTED',
+    contribution: mapRowToContribution(db.prepare('SELECT * FROM contributions WHERE id = ?').get(contrib.id))
+  });
 });

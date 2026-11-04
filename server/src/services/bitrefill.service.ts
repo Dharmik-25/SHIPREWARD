@@ -1,35 +1,28 @@
 import { BitrefillProductSummary, InvoiceStatus, OrderStatus } from '@shipreward/shared';
 import crypto from 'node:crypto';
+import { db } from '../db/database';
+import { AuditService } from './audit.service';
+import { BudgetService } from './budget.service';
+import { BitrefillMcpService, McpProductDetailsResult } from './bitrefill-mcp.service';
+import { VoucherSecurityService } from './voucher-security.service';
 
-// Realistic catalog for India & Global rewards based on official Bitrefill specs
+// Realistic confirmed catalog for India & Global rewards based on official Bitrefill MCP & CLI specs
 export const BITREFILL_CATALOG: BitrefillProductSummary[] = [
   {
-    id: 'swiggy-india',
-    name: 'Swiggy Money Voucher',
+    id: 'swiggy-money-india',
+    name: 'Swiggy Money India',
     country: 'IN',
     category: 'food',
-    description: 'Order food delivery, groceries on Instamart, and dine-out via Swiggy.',
+    description: 'Order food delivery, groceries on Instamart, and dine-out via Swiggy wallet.',
     currency: 'INR',
     recipient_type: 'none',
     in_stock: true,
     packages: [
-      { package_value: '250', package_currency: 'INR', payment_price: '2.99', payment_currency: 'USD' },
-      { package_value: '500', package_currency: 'INR', payment_price: '5.98', payment_currency: 'USD' },
-      { package_value: '1000', package_currency: 'INR', payment_price: '11.96', payment_currency: 'USD' }
-    ]
-  },
-  {
-    id: 'zomato-india',
-    name: 'Zomato Gift Card',
-    country: 'IN',
-    category: 'food',
-    description: 'Food delivery and dining out across India on Zomato.',
-    currency: 'INR',
-    recipient_type: 'none',
-    in_stock: true,
-    packages: [
-      { package_value: '250', package_currency: 'INR', payment_price: '2.99', payment_currency: 'USD' },
-      { package_value: '500', package_currency: 'INR', payment_price: '5.98', payment_currency: 'USD' }
+      { package_value: '50', package_currency: 'INR', payment_price: '0.55', payment_currency: 'USD' },
+      { package_value: '100', package_currency: 'INR', payment_price: '1.10', payment_currency: 'USD' },
+      { package_value: '250', package_currency: 'INR', payment_price: '2.75', payment_currency: 'USD' },
+      { package_value: '500', package_currency: 'INR', payment_price: '5.50', payment_currency: 'USD' },
+      { package_value: '1000', package_currency: 'INR', payment_price: '10.99', payment_currency: 'USD' }
     ]
   },
   {
@@ -43,8 +36,22 @@ export const BITREFILL_CATALOG: BitrefillProductSummary[] = [
     in_stock: true,
     packages: [
       { package_value: '10', package_currency: 'INR', payment_price: '0.11', payment_currency: 'USD' },
-      { package_value: '120', package_currency: 'INR', payment_price: '1.31', payment_currency: 'USD' },
-      { package_value: '500', package_currency: 'INR', payment_price: '5.49', payment_currency: 'USD' }
+      { package_value: '120', package_currency: 'INR', payment_price: '1.32', payment_currency: 'USD' },
+      { package_value: '500', package_currency: 'INR', payment_price: '5.50', payment_currency: 'USD' }
+    ]
+  },
+  {
+    id: 'zomato-india',
+    name: 'Zomato Gift Card',
+    country: 'IN',
+    category: 'food',
+    description: 'Food delivery and dining out across India on Zomato.',
+    currency: 'INR',
+    recipient_type: 'none',
+    in_stock: true,
+    packages: [
+      { package_value: '250', package_currency: 'INR', payment_price: '2.75', payment_currency: 'USD' },
+      { package_value: '500', package_currency: 'INR', payment_price: '5.50', payment_currency: 'USD' }
     ]
   },
   {
@@ -76,12 +83,31 @@ export const BITREFILL_CATALOG: BitrefillProductSummary[] = [
   }
 ];
 
+export const DISCOVERED_MCP_TOOLS = [
+  'get-product-details',
+  'search-products',
+  'buy-products',
+  'submit-prepayment-step',
+  'list-invoices',
+  'get-invoice-by-id',
+  'update-order',
+  'search_help_articles',
+  'get_help_article',
+  'list_help_articles',
+  'list-saved-fiat-cards',
+  'get-balances'
+];
+
 export interface PurchaseIntent {
+  contributionId: string;
   productId: string;
   packageValue: string;
   recipientEmail?: string;
   recipientPhone?: string; // international digits only without +, e.g. "919876543210"
-  intentPurpose: string;
+  intentPurpose?: string;
+  manualApproval?: boolean;
+  confirmedByAdmin?: boolean;
+  approvedBy?: string;
   isDemo?: boolean;
 }
 
@@ -101,10 +127,14 @@ export interface PurchaseResult {
 
 export class BitrefillService {
   /**
-   * Search catalog products by keyword or category.
+   * Search catalog products by keyword or category with MCP integration & fallback cache.
    */
   static searchProducts(query: string, country = 'IN'): BitrefillProductSummary[] {
-    const q = query.toLowerCase();
+    const q = query.toLowerCase().trim();
+    if (!q || q === '*') {
+      return BITREFILL_CATALOG.filter(p => p.country.toLowerCase() === country.toLowerCase());
+    }
+
     return BITREFILL_CATALOG.filter(p => 
       (p.country.toLowerCase() === country.toLowerCase()) &&
       (p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || p.category.toLowerCase().includes(q))
@@ -115,77 +145,389 @@ export class BitrefillService {
    * Get product details and confirm exact package values and price.
    */
   static getProductDetails(productId: string): BitrefillProductSummary | undefined {
-    return BITREFILL_CATALOG.find(p => p.id === productId);
+    return BITREFILL_CATALOG.find(p => 
+      p.id === productId || 
+      (productId === 'swiggy-india' && p.id === 'swiggy-money-india')
+    );
   }
 
   /**
-   * Check connection status to Bitrefill services.
+   * Get live product details directly through MCP client, falling back to cached catalog.
+   */
+  static async getLiveProductDetails(productId: string): Promise<{
+    product: BitrefillProductSummary;
+    isLive: boolean;
+  } | null> {
+    try {
+      const mcpResult = await BitrefillMcpService.getProductDetails(productId);
+      if (mcpResult && mcpResult.packages.length > 0) {
+        return {
+          product: {
+            id: mcpResult.id,
+            name: mcpResult.name,
+            country: mcpResult.country,
+            category: 'food',
+            description: mcpResult.rawText?.slice(0, 200) || '',
+            currency: mcpResult.currency,
+            recipient_type: mcpResult.recipient_type,
+            in_stock: mcpResult.in_stock,
+            packages: mcpResult.packages
+          },
+          isLive: true
+        };
+      }
+    } catch (err) {
+      // Fallback to static catalog below
+    }
+
+    const fallback = this.getProductDetails(productId);
+    if (fallback) {
+      return { product: fallback, isLive: false };
+    }
+    return null;
+  }
+
+  /**
+   * Check connection status to Bitrefill services via MCP handshake and REST ping.
+   * Distinguishes UNCONFIGURED, CONNECTED, and ERROR.
    */
   static async checkConnectionHealth(): Promise<{
-    status: 'connected' | 'unconfigured' | 'offline';
+    status: 'connected' | 'unconfigured' | 'error' | 'offline';
     hasApiKey: boolean;
     endpoint: string;
+    tools: string[];
+    mcpConnected: boolean;
+    latencyMs?: number;
+    error?: string | null;
   }> {
-    const apiKey = process.env.BITREFILL_API_KEY;
+    const apiKey = (process.env.BITREFILL_API_KEY || '').trim();
     const endpoint = process.env.BITREFILL_MCP_URL || 'https://api.bitrefill.com/mcp';
 
     if (!apiKey) {
       return {
         status: 'unconfigured',
         hasApiKey: false,
-        endpoint
+        endpoint,
+        tools: DISCOVERED_MCP_TOOLS,
+        mcpConnected: false,
+        error: null
       };
     }
 
-    // In live mode with API key configured, we ping the official endpoint
     try {
+      // 1. Test MCP Handshake
+      const mcpResult = await BitrefillMcpService.handshake();
+      if (mcpResult.status === 'connected') {
+        return {
+          status: 'connected',
+          hasApiKey: true,
+          endpoint,
+          tools: mcpResult.tools.length > 0 ? mcpResult.tools : DISCOVERED_MCP_TOOLS,
+          mcpConnected: true,
+          latencyMs: mcpResult.latencyMs,
+          error: null
+        };
+      }
+
+      // If MCP returned error, verify with REST v2 ping
       const res = await fetch('https://api.bitrefill.com/v2/ping', {
         headers: { 'Authorization': `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(3000)
+        signal: AbortSignal.timeout(4000)
       });
+
       if (res.ok) {
-        return { status: 'connected', hasApiKey: true, endpoint };
+        return {
+          status: 'connected',
+          hasApiKey: true,
+          endpoint,
+          tools: DISCOVERED_MCP_TOOLS,
+          mcpConnected: false,
+          error: null
+        };
       }
-      return { status: 'offline', hasApiKey: true, endpoint };
-    } catch {
-      return { status: 'offline', hasApiKey: true, endpoint };
+
+      if (res.status === 401) {
+        return {
+          status: 'error',
+          hasApiKey: true,
+          endpoint,
+          tools: DISCOVERED_MCP_TOOLS,
+          mcpConnected: false,
+          error: 'Unauthorized (401): Invalid Bitrefill API key in server/.env.'
+        };
+      }
+
+      return {
+        status: 'error',
+        hasApiKey: true,
+        endpoint,
+        tools: DISCOVERED_MCP_TOOLS,
+        mcpConnected: false,
+        error: `Bitrefill returned HTTP ${res.status}: ${res.statusText}`
+      };
+    } catch (err: any) {
+      return {
+        status: 'error',
+        hasApiKey: true,
+        endpoint,
+        tools: DISCOVERED_MCP_TOOLS,
+        mcpConnected: false,
+        error: `Bitrefill connection failed: ${err.message}`
+      };
     }
   }
 
   /**
    * Mask voucher codes for safe dashboard display and persistent audit trail.
-   * e.g. "SWIGGY-8942-1928-9821" -> "SWIGGY-••••-••••-9821"
    */
   static maskVoucherCode(code: string): string {
-    if (!code || code.length < 8) return '••••-••••';
-    const last4 = code.slice(-4);
-    const prefix = code.split('-')[0] || 'REWARD';
-    return `${prefix}-••••-••••-${last4}`;
+    return VoucherSecurityService.maskCode(code);
   }
 
   /**
-   * Executes a purchase following the official Bitrefill lifecycle:
-   * search-products -> get-product-details -> buy-products -> get-invoice-by-id -> check order delivery.
+   * Validates spend guardrails for an intended purchase.
+   * Returns whether authorized and detailed breakdown.
    */
-  static async executePurchase(intent: PurchaseIntent): Promise<PurchaseResult> {
+  static validateGuardrails(intent: PurchaseIntent): {
+    authorized: boolean;
+    requiresApproval: boolean;
+    reason?: string;
+    product?: BitrefillProductSummary;
+    packageValue?: string;
+    priceUsd?: number;
+    breakdown?: Record<string, any>;
+  } {
+    // 1. Check Emergency Freeze
+    const emergencyFreeze = process.env.EMERGENCY_PURCHASE_FREEZE === 'true';
+    if (emergencyFreeze) {
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: 'Emergency purchase freeze is active across all programmes.'
+      };
+    }
+
+    // 2. Check Contribution Exists and is VERIFIED
+    const contrib = db.prepare('SELECT * FROM contributions WHERE id = ?').get(intent.contributionId) as any;
+    if (!contrib) {
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: `Contribution '${intent.contributionId}' not found.`
+      };
+    }
+
+    if (contrib.verification_status !== 'VERIFIED') {
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: `Contribution is not in VERIFIED status (current: ${contrib.verification_status}). Only verified contributions qualify for fulfillment.`
+      };
+    }
+
+    // 3. Duplicate Purchase Prevention
+    const existingReward = db.prepare('SELECT * FROM rewards WHERE contribution_id = ?').get(intent.contributionId) as any;
+    if (existingReward) {
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: `Duplicate purchase prevented: Reward '${existingReward.id}' has already been fulfilled for PR #${contrib.pr_number}.`
+      };
+    }
+
+    // 4. Validate Product and Package Value
     const product = this.getProductDetails(intent.productId);
     if (!product) {
-      throw new Error(`Product not found in Bitrefill catalog: ${intent.productId}`);
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: `Product '${intent.productId}' not found in catalog.`
+      };
     }
 
     const pkg = product.packages.find(p => p.package_value === intent.packageValue);
     if (!pkg) {
-      throw new Error(`Invalid package_value '${intent.packageValue}' for product '${product.id}'. Must match exact catalog package.`);
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: `Invalid package_value '${intent.packageValue}' for product '${product.id}'. Must match exact catalog denomination.`
+      };
     }
 
     const priceUsd = parseFloat(pkg.payment_price);
+
+    const isDemo = Boolean(intent.isDemo || contrib?.is_demo || !process.env.BITREFILL_API_KEY);
+
+    // 5. Check Budget Authorization via BudgetService
+    const budgetAuth = BudgetService.authorizeSpend(contrib.program_id, priceUsd, isDemo);
+    if (!budgetAuth.authorized) {
+      return {
+        authorized: false,
+        requiresApproval: false,
+        reason: `Budget guardrail rejected: ${budgetAuth.reason}`
+      };
+    }
+
+    // 6. Check Single Reward Threshold & Approval Requirement
+    const autoPurchaseEnabled = process.env.AUTO_PURCHASE_ENABLED === 'true';
+    const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '0.60');
+
+    if (priceUsd > singleCap) {
+      return {
+        authorized: false,
+        requiresApproval: true,
+        reason: `Purchase price ($${priceUsd.toFixed(2)}) exceeds maximum single reward cap ($${singleCap.toFixed(2)}).`
+      };
+    }
+
+    const hasExplicitApproval = Boolean(intent.manualApproval || intent.confirmedByAdmin);
+    const requiresApproval = !autoPurchaseEnabled;
+
+    if (requiresApproval && !hasExplicitApproval) {
+      return {
+        authorized: false,
+        requiresApproval: true,
+        reason: 'Auto-purchase is disabled. Explicit maintainer approval is required to execute reward fulfillment.',
+        product,
+        packageValue: pkg.package_value,
+        priceUsd,
+        breakdown: {
+          productName: product.name,
+          packageValue: pkg.package_value,
+          packageCurrency: pkg.package_currency,
+          priceUsd,
+          programId: contrib.program_id,
+          contributor: contrib.contributor,
+          prNumber: contrib.pr_number,
+          autoPurchaseEnabled,
+          emergencyFreeze,
+          confirmationState: 'AWAITING_EXPLICIT_CONFIRMATION'
+        }
+      };
+    }
+
+    return {
+      authorized: true,
+      requiresApproval: false,
+      product,
+      packageValue: pkg.package_value,
+      priceUsd,
+      breakdown: {
+        productName: product.name,
+        packageValue: pkg.package_value,
+        packageCurrency: pkg.package_currency,
+        priceUsd,
+        programId: contrib.program_id,
+        contributor: contrib.contributor,
+        prNumber: contrib.pr_number,
+        autoPurchaseEnabled,
+        emergencyFreeze,
+        confirmationState: 'AUTHORIZED'
+      }
+    };
+  }
+
+  /**
+   * Executes a purchase following the official Bitrefill lifecycle:
+   * Guardrail check -> buy-products -> get-invoice-by-id -> check order delivery.
+   */
+  static async executePurchase(intent: PurchaseIntent): Promise<PurchaseResult> {
+    const guardrail = this.validateGuardrails(intent);
+    if (!guardrail.authorized) {
+      AuditService.log({
+        eventType: 'PURCHASE_FAILED',
+        actor: 'bitrefill_guardrail',
+        decision: 'REJECTED',
+        contributionId: intent.contributionId,
+        costUsd: guardrail.priceUsd || 0,
+        details: `Purchase blocked: ${guardrail.reason}`
+      });
+      throw new Error(guardrail.reason || 'Purchase blocked by spend guardrails.');
+    }
+
+    const product = guardrail.product!;
+    const pkg = product.packages.find(p => p.package_value === intent.packageValue)!;
+    const priceUsd = guardrail.priceUsd!;
     const now = new Date().toISOString();
 
-    // In demo or test mode without real API credits:
-    if (intent.isDemo || !process.env.BITREFILL_API_KEY) {
+    const contrib = db.prepare('SELECT * FROM contributions WHERE id = ?').get(intent.contributionId) as any;
+    const isDemo = Boolean(intent.isDemo || contrib?.is_demo || !process.env.BITREFILL_API_KEY);
+
+    // Atomically reserve budget before executing downstream purchase
+    const reserved = BudgetService.reserveBudget(contrib.program_id, priceUsd, isDemo);
+    if (!reserved) {
+      AuditService.log({
+        eventType: 'PURCHASE_FAILED',
+        actor: 'budget_guardrail',
+        decision: 'REJECTED',
+        programId: contrib.program_id,
+        contributionId: intent.contributionId,
+        costUsd: priceUsd,
+        details: 'Atomic budget reservation failed: programme budget cap reached.'
+      });
+      throw new Error('Concurrent budget limit reached: programme daily or total budget fully allocated.');
+    }
+
+    // DEMO / SIMULATION EXECUTION
+    if (isDemo) {
       const demoInvoiceId = 'inv_' + crypto.randomBytes(6).toString('hex');
       const demoOrderId = 'ord_' + crypto.randomBytes(6).toString('hex');
       const rawVoucher = `${product.name.split(' ')[0].toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+      const maskedCode = this.maskVoucherCode(rawVoucher);
+
+      // Encrypt raw redemption voucher
+      const envelope = VoucherSecurityService.encrypt({
+        code: rawVoucher,
+        instructions: `Redeem via ${product.name} app or website using registered account details.`
+      });
+
+      const rewardId = 'rew_' + crypto.randomBytes(6).toString('hex');
+      db.prepare(`
+        INSERT INTO rewards (
+          id, contribution_id, program_id, contributor, recipient_email, recipient_phone,
+          product_id, product_name, package_value, package_currency, price_usd,
+          invoice_id, invoice_status, order_id, order_status, masked_voucher_code,
+          encrypted_voucher_payload, voucher_iv, voucher_auth_tag,
+          redemption_instructions, is_demo, created_at, delivered_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        rewardId,
+        intent.contributionId,
+        contrib.program_id,
+        contrib.contributor,
+        intent.recipientEmail || null,
+        intent.recipientPhone || null,
+        product.id,
+        product.name,
+        pkg.package_value,
+        pkg.package_currency,
+        priceUsd,
+        demoInvoiceId,
+        'complete',
+        demoOrderId,
+        'delivered',
+        maskedCode,
+        envelope.encryptedPayload,
+        envelope.iv,
+        envelope.authTag,
+        `Redeem via ${product.name} app or website using registered account details.`,
+        contrib.is_demo ? 1 : 0,
+        now,
+        now
+      );
+
+      BudgetService.recordSpend(contrib.program_id, priceUsd, Boolean(contrib.is_demo));
+
+      AuditService.log({
+        eventType: 'BITREFILL_ORDER_DELIVERED',
+        actor: intent.approvedBy || 'autonomous_agent',
+        decision: 'AUTHORIZED',
+        programId: contrib.program_id,
+        contributionId: intent.contributionId,
+        rewardId,
+        costUsd: priceUsd,
+        details: `Fulfilled ${product.name} (${pkg.package_value} ${pkg.package_currency}) for @${contrib.contributor}. Invoice: ${demoInvoiceId}`
+      });
 
       return {
         invoiceId: demoInvoiceId,
@@ -196,52 +538,83 @@ export class BitrefillService {
         productName: product.name,
         packageValue: pkg.package_value,
         packageCurrency: pkg.package_currency,
-        maskedVoucherCode: this.maskVoucherCode(rawVoucher),
+        maskedVoucherCode: maskedCode,
         redemptionInstructions: `Redeem via ${product.name} app or website using registered account details.`,
         deliveredAt: now
       };
     }
 
-    // LIVE BITREFILL EXECUTION (Using official REST v2 / MCP endpoint)
-    // Note: This path executes when BITREFILL_API_KEY is provided and intent.isDemo is false.
-    const apiKey = process.env.BITREFILL_API_KEY;
-    const invoicePayload: any = {
-      products: [{
-        product_id: product.id,
-        value: parseFloat(pkg.package_value),
-        quantity: 1,
-        phone_number: intent.recipientPhone
-      }],
-      payment_method: 'balance',
-      auto_pay: true
-    };
-
-    const invoiceRes = await fetch('https://api.bitrefill.com/v2/invoices', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(invoicePayload)
-    });
-
-    if (!invoiceRes.ok) {
-      const errText = await invoiceRes.text();
-      throw new Error(`Bitrefill invoice creation failed: ${invoiceRes.status} ${errText}`);
+    // LIVE BITREFILL EXECUTION via authenticated MCP buy-products
+    // Strict Precondition: Verify separate VOUCHER_ENCRYPTION_KEY before placing order
+    if (!VoucherSecurityService.verifyEncryptionHealth()) {
+      throw new Error('Preflight check failed: Voucher encryption health verification failed.');
     }
 
-    const invoiceJson: any = await invoiceRes.json();
-    const invoiceData = invoiceJson.data;
-    const invoiceId = invoiceData.id;
-    const orderId = invoiceData.orders?.[0]?.id || 'ord_pending';
+    const apiKey = (process.env.BITREFILL_API_KEY || '').trim();
+    let invoiceId = '';
+    let invoiceStatus = 'complete';
+    let orderId = 'ord_pending';
 
-    // Poll until order is DELIVERED
+    try {
+      const mcpBuyResult = await BitrefillMcpService.buyProducts([
+        {
+          product_id: product.id,
+          package_value: pkg.package_value
+        }
+      ]);
+      invoiceId = mcpBuyResult.invoiceId;
+      if (!invoiceId) {
+        // If regex didn't match UUID directly, parse from list-invoices or REST v2
+        const invList = await fetch('https://api.bitrefill.com/v2/invoices?limit=1', {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        if (invList.ok) {
+          const invListJson = await invList.json();
+          invoiceId = invListJson.data?.[0]?.id || '';
+        }
+      }
+    } catch (mcpErr: any) {
+      BudgetService.releaseReservation(contrib.program_id, priceUsd, isDemo);
+      AuditService.log({
+        eventType: 'PURCHASE_FAILED',
+        actor: 'bitrefill_mcp',
+        decision: 'ERROR',
+        contributionId: intent.contributionId,
+        costUsd: priceUsd,
+        details: `Bitrefill MCP buy-products execution failed: ${mcpErr.message}`
+      });
+      throw new Error(`Bitrefill MCP buy-products execution failed: ${mcpErr.message}`);
+    }
+
+    if (!invoiceId) {
+      BudgetService.releaseReservation(contrib.program_id, priceUsd, isDemo);
+      throw new Error('Bitrefill purchase failed: No invoice ID returned from buy-products.');
+    }
+
+    // Reconcile invoice details and retrieve order ID
+    try {
+      const invRes = await fetch(`https://api.bitrefill.com/v2/invoices/${invoiceId}`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` }
+      });
+      if (invRes.ok) {
+        const invJson = await invRes.json();
+        invoiceStatus = invJson.data?.status || 'complete';
+        orderId = invJson.data?.orders?.[0]?.id || 'ord_pending';
+      }
+    } catch (reconErr) {
+      // Non-fatal, proceed with polling
+    }
+
+    // Poll until order is DELIVERED (do not treat invoice complete as order delivered)
     let orderStatus: OrderStatus = 'processing';
     let rawCode = '';
+    let pin = '';
+    let link = '';
+    let instructions = `Delivery confirmed by Bitrefill for ${product.name}`;
 
     if (orderId && orderId !== 'ord_pending') {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        await new Promise(r => setTimeout(r, 1500));
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(r => setTimeout(r, 2500));
         const orderRes = await fetch(`https://api.bitrefill.com/v2/orders/${orderId}`, {
           headers: { 'Authorization': `Bearer ${apiKey}` }
         });
@@ -249,26 +622,86 @@ export class BitrefillService {
           const orderJson: any = await orderRes.json();
           if (orderJson.data.status === 'delivered') {
             orderStatus = 'delivered';
-            rawCode = orderJson.data.redemption_info?.code || orderJson.data.redemption_info?.pin || '';
+            const info = orderJson.data.redemption_info || {};
+            rawCode = info.code || info.pin || '';
+            pin = info.pin || '';
+            link = info.link || '';
+            instructions = info.instructions || instructions;
             break;
           }
         }
       }
     }
 
+    const maskedCode = this.maskVoucherCode(rawCode || 'CODE-REDACTED');
+    const rewardId = 'rew_' + crypto.randomBytes(6).toString('hex');
+    const finishTime = new Date().toISOString();
+
+    // Encrypt raw voucher details
+    const envelope = VoucherSecurityService.encrypt({
+      code: rawCode,
+      pin,
+      link,
+      instructions
+    });
+
+    db.prepare(`
+      INSERT INTO rewards (
+        id, contribution_id, program_id, contributor, recipient_email, recipient_phone,
+        product_id, product_name, package_value, package_currency, price_usd,
+        invoice_id, invoice_status, order_id, order_status, masked_voucher_code,
+        encrypted_voucher_payload, voucher_iv, voucher_auth_tag,
+        redemption_instructions, is_demo, created_at, delivered_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      rewardId,
+      intent.contributionId,
+      contrib.program_id,
+      contrib.contributor,
+      intent.recipientEmail || null,
+      intent.recipientPhone || null,
+      product.id,
+      product.name,
+      pkg.package_value,
+      pkg.package_currency,
+      priceUsd,
+      invoiceId,
+      invoiceStatus,
+      orderId,
+      orderStatus,
+      maskedCode,
+      envelope.encryptedPayload,
+      envelope.iv,
+      envelope.authTag,
+      instructions,
+      0, // Live real reward
+      now,
+      orderStatus === 'delivered' ? finishTime : null
+    );
+
+    AuditService.log({
+      eventType: orderStatus === 'delivered' ? 'BITREFILL_ORDER_DELIVERED' : 'BITREFILL_INVOICE_CREATED',
+      actor: intent.approvedBy || 'autonomous_agent',
+      decision: 'AUTHORIZED',
+      programId: contrib.program_id,
+      contributionId: intent.contributionId,
+      rewardId,
+      costUsd: priceUsd,
+      details: `Live Bitrefill MCP purchase: ${product.name} (${pkg.package_value} ${pkg.package_currency}) for @${contrib.contributor}. Invoice: ${invoiceId}, Order: ${orderId}, Status: ${orderStatus}`
+    });
+
     return {
       invoiceId,
-      invoiceStatus: invoiceData.status || 'complete',
+      invoiceStatus: invoiceStatus as InvoiceStatus,
       orderId,
       orderStatus,
       priceUsd,
       productName: product.name,
       packageValue: pkg.package_value,
       packageCurrency: pkg.package_currency,
-      maskedVoucherCode: this.maskVoucherCode(rawCode || 'CODE-REDACTED'),
-      redemptionInstructions: `Delivery confirmed by Bitrefill for ${product.name}`,
-      deliveredAt: new Date().toISOString()
+      maskedVoucherCode: maskedCode,
+      redemptionInstructions: instructions,
+      deliveredAt: finishTime
     };
   }
 }
-

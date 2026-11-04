@@ -1,9 +1,21 @@
 export type ProgramTier = 'CAMPUS' | 'BUILDER' | 'ENTERPRISE';
 
+export type RewardClassification = 'INSUFFICIENT' | 'BASIC' | 'GOOD' | 'EXCELLENT' | 'EXCEPTIONAL';
+
+export type ApprovalStatus = 'NOT_REQUIRED' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+
+export interface RubricCriterion {
+  name: string;
+  weight: number; // e.g. 25
+  description: string;
+}
+
 export interface ProgramPolicy {
   id: string;
   name: string;
   tier: ProgramTier;
+  owner: string; // e.g. "Prof. Sharma (CS Dept)", "Lead Maintainer", "VP Engineering"
+  fundingSource: string; // e.g. "CS Dept Grant 2026", "Open Source Treasury", "Platform Budget Pool"
   description: string;
   repository: string; // e.g. "shipreward/core-engine"
   targetBranch: string; // e.g. "main"
@@ -11,24 +23,28 @@ export interface ProgramPolicy {
   requireCiPass: boolean;
   requireMaintainerApproval: boolean;
   allowSelfApproval: boolean; // default false (fraud prevention)
-  perContributionRewardUsd: number; // e.g. 5.00
-  dailyBudgetUsd: number; // e.g. 25.00
-  totalBudgetUsd: number; // e.g. 100.00
+  perContributionRewardUsd: number; // e.g. 0.55
+  approvalThresholdUsd: number; // e.g. 1.00 (amounts >= require manager/maintainer approval)
+  dailyBudgetUsd: number; // e.g. 5.00
+  totalBudgetUsd: number; // e.g. 50.00
   spentTodayUsd: number;
   totalSpentUsd: number;
-  allowedProductIds: string[]; // e.g. ["swiggy-india", "zomato-india", "airtel-india", "jio-india"]
+  allowedProductIds: string[]; // e.g. ["swiggy-money-india", "airtel-india", "zomato-india"]
   autoFulfill: boolean;
   active: boolean;
+  rubricCriteria?: RubricCriterion[];
   createdAt: string;
   updatedAt: string;
 }
 
 export type VerificationStatus = 
-  | 'PENDING'
+  | 'RECEIVED'
+  | 'VERIFYING'
   | 'VERIFIED'
-  | 'NEEDS_REVIEW'
   | 'REJECTED'
-  | 'FRAUD_FLAGGED';
+  | 'NEEDS_REVIEW'
+  | 'FRAUD_FLAGGED'
+  | 'PENDING';
 
 export interface Contribution {
   id: string;
@@ -63,8 +79,16 @@ export interface Contribution {
     };
     hasTestFiles?: boolean;
     approvingMaintainers?: string[];
+    rubricEvaluation?: Record<string, number>;
   };
   aiExplanation?: string;
+  rewardTier?: RewardClassification;
+  suggestedRewardUsd?: number;
+  suggestedProductId?: string;
+  suggestedPackageValue?: string;
+  approvalStatus?: ApprovalStatus;
+  approvedBy?: string | null;
+  approvalReason?: string | null;
   isDemo: boolean;
   createdAt: string;
   updatedAt: string;
@@ -92,6 +116,7 @@ export interface RewardRecord {
   id: string;
   contributionId: string;
   programId: string;
+  prNumber?: number;
   contributor: string;
   recipientEmail?: string;
   recipientPhone?: string;
@@ -135,6 +160,13 @@ export interface AuditEvent {
   metadata?: Record<string, any>;
 }
 
+export interface BitrefillPackage {
+  package_value: string;
+  package_currency: string;
+  payment_price: string;
+  payment_currency: string;
+}
+
 export interface BitrefillProductSummary {
   id: string;
   name: string;
@@ -142,14 +174,29 @@ export interface BitrefillProductSummary {
   category: string;
   description: string;
   currency: string;
-  packages: Array<{
-    package_value: string;
-    package_currency: string;
-    payment_price: string;
-    payment_currency: string;
-  }>;
+  packages: BitrefillPackage[];
   recipient_type: 'phone_number' | 'account' | 'email' | 'username' | 'none';
   in_stock: boolean;
+}
+
+export type BitrefillConnectionStatus = 'UNCONFIGURED' | 'CONNECTED' | 'ERROR' | 'OFFLINE';
+
+export interface BitrefillHealthInfo {
+  status: BitrefillConnectionStatus;
+  hasApiKey: boolean;
+  endpoint: string;
+  toolsDiscovered: string[];
+  error?: string | null;
+  checkedAt: string;
+}
+
+export interface SpendGuardrailStatus {
+  dailySpendCapUsd: number;
+  spentTodayUsd: number;
+  remainingTodayUsd: number;
+  singleRewardCapUsd: number;
+  emergencyFreeze: boolean;
+  autoPurchaseEnabled: boolean;
 }
 
 export interface SystemHealth {
@@ -159,12 +206,13 @@ export interface SystemHealth {
   environment: string;
   database: 'connected' | 'disconnected';
   bitrefill: {
-    status: 'connected' | 'unconfigured' | 'offline';
+    status: 'connected' | 'unconfigured' | 'error' | 'offline';
     endpoint: string;
     dailySpendCapUsd: number;
     spentTodayUsd: number;
     remainingTodayUsd: number;
     emergencyFreeze: boolean;
+    error?: string | null;
   };
   metrics: {
     totalPrograms: number;

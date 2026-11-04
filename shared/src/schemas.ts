@@ -4,6 +4,8 @@ export const ProgramPolicySchema = z.object({
   id: z.string().optional(),
   name: z.string().min(3),
   tier: z.enum(['CAMPUS', 'BUILDER', 'ENTERPRISE']),
+  owner: z.string().optional(),
+  fundingSource: z.string().optional(),
   description: z.string(),
   repository: z.string().min(3),
   targetBranch: z.string().default('main'),
@@ -12,11 +14,17 @@ export const ProgramPolicySchema = z.object({
   requireMaintainerApproval: z.boolean().default(true),
   allowSelfApproval: z.boolean().default(false),
   perContributionRewardUsd: z.number().positive().max(50),
+  approvalThresholdUsd: z.number().min(0).optional(),
   dailyBudgetUsd: z.number().positive().max(100),
   totalBudgetUsd: z.number().positive(),
   allowedProductIds: z.array(z.string()).min(1),
   autoFulfill: z.boolean().default(true),
   active: z.boolean().default(true),
+  rubricCriteria: z.array(z.object({
+    name: z.string(),
+    weight: z.number(),
+    description: z.string()
+  })).optional()
 });
 
 export const WebhookEventSchema = z.object({

@@ -28,7 +28,7 @@ healthRouter.get('/health', async (req: Request, res: Response) => {
     const fraudCount = (db.prepare("SELECT COUNT(*) as c FROM contributions WHERE verification_status = 'FRAUD_FLAGGED'").get() as any).c;
 
     // Daily Spend
-    const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '25.00');
+    const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '1.00');
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const spentTodayRow = db.prepare(`
@@ -50,7 +50,8 @@ healthRouter.get('/health', async (req: Request, res: Response) => {
         dailySpendCapUsd: dailyCap,
         spentTodayUsd: spentToday,
         remainingTodayUsd: Math.max(0, dailyCap - spentToday),
-        emergencyFreeze: process.env.EMERGENCY_PURCHASE_FREEZE === 'true'
+        emergencyFreeze: process.env.EMERGENCY_PURCHASE_FREEZE === 'true',
+        error: bitrefillHealth.error || null
       },
       metrics: {
         totalPrograms: progCount,

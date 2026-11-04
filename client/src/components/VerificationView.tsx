@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Contribution } from '@shipreward/shared';
-import { approveContribution } from '../services/api';
+import { approveContribution, rejectContribution } from '../services/api';
 import { 
   ShieldCheck, 
   ShieldAlert, 
@@ -10,7 +10,10 @@ import {
   Sparkles, 
   Check, 
   X,
-  ArrowRight
+  Clock,
+  ArrowRight,
+  UserCheck,
+  Award
 } from 'lucide-react';
 
 interface VerificationViewProps {
@@ -27,19 +30,36 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
   onRefresh
 }) => {
   const [isApproving, setIsApproving] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
   const active = selectedContribution || contributions[0] || null;
 
   const handleApprove = async () => {
     if (!active) return;
     setIsApproving(true);
     try {
-      await approveContribution(active.id, 'Lead Maintainer');
-      alert('Contribution approved! Reward fulfilled via Bitrefill.');
+      await approveContribution(active.id, 'Coordinator / Maintainer', 'Verified milestone quality and evidence', false);
+      alert('Contribution approved successfully!');
       onRefresh();
     } catch (err: any) {
       alert(`Approval error: ${err.message}`);
     } finally {
       setIsApproving(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!active) return;
+    const reason = prompt('Reason for rejection:', 'Insufficient rubric evidence or non-compliant contribution');
+    if (!reason) return;
+    setIsRejecting(true);
+    try {
+      await rejectContribution(active.id, 'Coordinator / Maintainer', reason);
+      alert('Contribution rejected.');
+      onRefresh();
+    } catch (err: any) {
+      alert(`Rejection error: ${err.message}`);
+    } finally {
+      setIsRejecting(false);
     }
   };
 
@@ -54,6 +74,12 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
   const isVerified = active.verificationStatus === 'VERIFIED';
   const isFraud = active.verificationStatus === 'FRAUD_FLAGGED';
   const isNeedsReview = active.verificationStatus === 'NEEDS_REVIEW';
+  const isRejected = active.verificationStatus === 'REJECTED';
+  const isVerifying = active.verificationStatus === 'VERIFYING';
+  const isReceived = active.verificationStatus === 'RECEIVED';
+
+  const isPendingApproval = active.approvalStatus === 'PENDING_APPROVAL';
+  const isApproved = active.approvalStatus === 'APPROVED' || active.approvalStatus === 'NOT_REQUIRED';
 
   const ruleChecks = active.evidenceDetails?.ruleChecks || {
     repoAllowlisted: true,
@@ -61,11 +87,28 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
     ciChecksPassed: active.ciStatus === 'passed',
     maintainerApproved: active.maintainerApproved,
     notSelfApproved: !active.selfApproved,
-    noDuplicate: !active.fraudFlags.includes('DUPLICATE_REWARD_CLAIM_PREVENTED'),
+    noDuplicate: !active.fraudFlags?.includes('DUPLICATE_REWARD_CLAIM_PREVENTED'),
   };
 
+  const rubric = active.evidenceDetails?.rubricEvaluation || {
+    codeScope: Math.min(30, Math.round((active.evaluationScore || 70) * 0.3)),
+    testAndCi: active.ciStatus === 'passed' ? 25 : 0,
+    peerReviewQuality: active.maintainerApproved ? 25 : 0,
+    tierObjectiveAlignment: 15
+  };
+
+  const tierColors: Record<string, string> = {
+    INSUFFICIENT: 'border-slate-700 bg-slate-900 text-slate-400',
+    BASIC: 'border-blue-500/40 bg-blue-950/40 text-blue-400',
+    GOOD: 'border-emerald-500/40 bg-emerald-950/40 text-emerald-400',
+    EXCELLENT: 'border-purple-500/40 bg-purple-950/40 text-purple-400',
+    EXCEPTIONAL: 'border-amber-500/40 bg-amber-950/40 text-amber-300'
+  };
+
+  const rewardTier = active.rewardTier || 'GOOD';
+
   return (
-    <div className="flex-1 flex flex-col lg:flex-row gap-3 min-h-0 w-full">
+    <div className="flex-1 flex flex-col lg:flex-row gap-3 min-h-0 w-full overflow-y-auto">
       {/* Left: Evidence Inspector & Deterministic Checklist */}
       <div className="flex-[3] bg-[#0E1014] border border-[#1E222B] rounded-2xl p-5 flex flex-col justify-between shadow-xl">
         <div>
@@ -84,6 +127,9 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
                     LIVE GITHUB WEBHOOK EVIDENCE
                   </span>
                 )}
+                <span className={`px-2 py-0.5 rounded border text-[10px] font-mono font-bold ${tierColors[rewardTier] || tierColors.GOOD}`}>
+                  TIER: {rewardTier}
+                </span>
               </div>
               <h2 className="text-base font-semibold text-slate-100 mt-0.5">
                 PR #{active.prNumber}: {active.prTitle}
@@ -102,7 +148,7 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
           </div>
 
           {/* Quick Info Grid */}
-          <div className="grid grid-cols-3 gap-3 my-3 text-xs font-mono">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 my-3 text-xs font-mono">
             <div className="bg-[#14161D] border border-[#20242F] p-3 rounded-xl">
               <div className="text-slate-500">CONTRIBUTOR & IDENTITY</div>
               <div className="text-slate-200 font-semibold mt-1">@{active.contributor}</div>
@@ -122,12 +168,66 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
             </div>
 
             <div className="bg-[#14161D] border border-[#20242F] p-3 rounded-xl">
-              <div className="text-slate-500">REWARD RECIPIENT TARGET</div>
-              <div className="text-slate-200 font-semibold mt-1">
-                {active.evidenceDetails?.recipient?.email || active.evidenceDetails?.recipient?.phone || 'Mapped: Direct Account'}
+              <div className="text-slate-500">REWARD CLASSIFICATION</div>
+              <div className="text-slate-200 font-semibold mt-1 flex items-center gap-1.5">
+                <Award className="w-3.5 h-3.5 text-amber-400" />
+                <span>${active.suggestedRewardUsd?.toFixed(2) || '0.55'} USD</span>
+                <span className="text-[10px] text-slate-400 font-normal">
+                  ({active.suggestedPackageValue ? `₹${active.suggestedPackageValue}` : '₹50'} voucher)
+                </span>
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                {active.evidenceDetails?.recipient ? 'From PR directive / policy' : 'Pending contributor claim'}
+                Approval: <span className={isPendingApproval ? 'text-amber-400 font-semibold' : 'text-emerald-400'}>{active.approvalStatus || 'NOT_REQUIRED'}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Multi-Factor Rubric Evaluation Breakdown */}
+          <div className="bg-[#12141A] border border-[#1C202A] rounded-xl p-4 my-3">
+            <div className="text-xs font-mono text-slate-400 mb-3 font-semibold uppercase flex items-center justify-between">
+              <span>Deterministic Rubric Breakdown</span>
+              <span className="text-[10px] text-slate-500">Max 100 Points</span>
+            </div>
+
+            <div className="space-y-2.5 text-xs font-mono">
+              <div>
+                <div className="flex justify-between text-slate-300 mb-1">
+                  <span>1. Code Scope & Complexity</span>
+                  <span className="text-slate-400">{rubric.codeScope} / 30 pts</span>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-blue-500 h-1.5 rounded-full" style={{ width: `${(rubric.codeScope / 30) * 100}%` }}></div>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-slate-300 mb-1">
+                  <span>2. Test Coverage & CI Validation</span>
+                  <span className="text-slate-400">{rubric.testAndCi} / 25 pts</span>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-emerald-500 h-1.5 rounded-full" style={{ width: `${(rubric.testAndCi / 25) * 100}%` }}></div>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-slate-300 mb-1">
+                  <span>3. Peer Review & Governance</span>
+                  <span className="text-slate-400">{rubric.peerReviewQuality} / 25 pts</span>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-purple-500 h-1.5 rounded-full" style={{ width: `${(rubric.peerReviewQuality / 25) * 100}%` }}></div>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-slate-300 mb-1">
+                  <span>4. Programme Tier Alignment</span>
+                  <span className="text-slate-400">{rubric.tierObjectiveAlignment} / 20 pts</span>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-amber-500 h-1.5 rounded-full" style={{ width: `${(rubric.tierObjectiveAlignment / 20) * 100}%` }}></div>
+                </div>
               </div>
             </div>
           </div>
@@ -194,11 +294,17 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
           <div className={`p-3.5 rounded-xl border my-4 text-xs font-mono ${
             isVerified ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300' :
             isFraud ? 'bg-rose-950/40 border-rose-500/40 text-rose-300' :
+            isRejected ? 'bg-red-950/40 border-red-500/40 text-red-300' :
+            isVerifying ? 'bg-sky-950/40 border-sky-500/40 text-sky-300' :
+            isReceived ? 'bg-indigo-950/40 border-indigo-500/40 text-indigo-300' :
             'bg-amber-950/40 border-amber-500/40 text-amber-300'
           }`}>
             <div className="font-bold flex items-center gap-2">
               {isVerified && <CheckCircle2 className="w-4 h-4" />}
               {isFraud && <ShieldAlert className="w-4 h-4" />}
+              {isRejected && <X className="w-4 h-4" />}
+              {isVerifying && <Sparkles className="w-4 h-4 animate-spin" />}
+              {isReceived && <Clock className="w-4 h-4" />}
               {isNeedsReview && <AlertTriangle className="w-4 h-4" />}
               <span>DECISION: {active.verificationStatus}</span>
             </div>
@@ -207,6 +313,20 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
                 Flags: [{active.fraudFlags.join(', ')}]
               </div>
             )}
+            <div className="mt-2 text-[11px] text-slate-300 font-sans border-t border-[#3A4050]/40 pt-2">
+              {active.approvalStatus === 'PENDING_APPROVAL' && (
+                <span className="text-amber-300 font-semibold">⚠️ Requires Coordinator / Maintainer Approval</span>
+              )}
+              {active.approvalStatus === 'APPROVED' && (
+                <span className="text-emerald-300 font-semibold">✓ Approved by {active.approvedBy || 'Maintainer'}</span>
+              )}
+              {active.approvalStatus === 'NOT_REQUIRED' && (
+                <span className="text-emerald-300">✓ Autonomous Verification Verified</span>
+              )}
+              {active.approvalStatus === 'REJECTED' && (
+                <span className="text-rose-400">✗ Rejected by Policy or Maintainer</span>
+              )}
+            </div>
           </div>
 
           {/* Bitrefill Execution Lifecycle */}
@@ -235,16 +355,27 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
           </div>
         </div>
 
-        {/* Action Controls for Manual Review */}
+        {/* Action Controls for Manual Review & Approval Queue */}
         <div className="pt-4 border-t border-[#1A1D24] space-y-2">
-          {isNeedsReview && (
-            <button
-              onClick={handleApprove}
-              disabled={isApproving}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-xl text-xs font-semibold font-mono flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/40"
-            >
-              {isApproving ? 'Executing Bitrefill Fulfilment...' : 'Override & Authorize Bitrefill Fulfilment'}
-            </button>
+          {(isPendingApproval || isNeedsReview) && (
+            <div className="flex gap-2">
+              <button
+                onClick={handleApprove}
+                disabled={isApproving || isRejecting}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-xl text-xs font-semibold font-mono flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-950/40"
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                {isApproving ? 'Approving...' : 'Approve'}
+              </button>
+              <button
+                onClick={handleReject}
+                disabled={isApproving || isRejecting}
+                className="flex-1 bg-rose-950 hover:bg-rose-900 border border-rose-800 text-rose-300 py-2 rounded-xl text-xs font-semibold font-mono flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                {isRejecting ? 'Rejecting...' : 'Reject'}
+              </button>
+            </div>
           )}
 
           <a

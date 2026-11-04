@@ -5,10 +5,12 @@ export class BudgetService {
   /**
    * Evaluates whether an intended purchase is authorized under spend caps and active balances.
    */
-  static authorizeSpend(programId: string, amountUsd: number): {
+  static authorizeSpend(programId: string, amountUsd: number, isDemo = false): {
     authorized: boolean;
     reason?: string;
   } {
+    if (isDemo) return { authorized: true };
+
     // 1. Check Global Emergency Kill Switch
     const emergencyFreeze = process.env.EMERGENCY_PURCHASE_FREEZE === 'true';
     if (emergencyFreeze) {
@@ -24,7 +26,7 @@ export class BudgetService {
     }
 
     // 2. Check Single Reward Cap
-    const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '10.00');
+    const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '0.60');
     if (amountUsd > singleCap) {
       AuditService.log({
         eventType: 'POLICY_AUTHORIZED',
@@ -38,7 +40,7 @@ export class BudgetService {
     }
 
     // 3. Check Account-wide Daily Cap
-    const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '25.00');
+    const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '1.00');
     
     // Sum real spend today
     const startOfToday = new Date();
@@ -82,10 +84,46 @@ export class BudgetService {
   }
 
   /**
-   * Atomically records spent budget for a programme.
+   * Atomically reserves budget for a programme to prevent race conditions during concurrent purchase calls.
+   * Uses atomic conditional SQL update. Returns false if concurrent requests exceed budget.
+   */
+  static reserveBudget(programId: string, amountUsd: number, isDemo = false): boolean {
+    if (isDemo) return true;
+
+    const stmt = db.prepare(`
+      UPDATE programs
+      SET spent_today_usd = spent_today_usd + ?,
+          total_spent_usd = total_spent_usd + ?,
+          updated_at = ?
+      WHERE id = ? 
+        AND (spent_today_usd + ?) <= daily_budget_usd
+        AND (total_spent_usd + ?) <= total_budget_usd
+    `);
+
+    const result = stmt.run(amountUsd, amountUsd, new Date().toISOString(), programId, amountUsd, amountUsd);
+    return result.changes > 0;
+  }
+
+  /**
+   * Releases an atomic budget reservation if purchase fails or is rejected downstream.
+   */
+  static releaseReservation(programId: string, amountUsd: number, isDemo = false): void {
+    if (isDemo) return;
+
+    db.prepare(`
+      UPDATE programs
+      SET spent_today_usd = MAX(0, spent_today_usd - ?),
+          total_spent_usd = MAX(0, total_spent_usd - ?),
+          updated_at = ?
+      WHERE id = ?
+    `).run(amountUsd, amountUsd, new Date().toISOString(), programId);
+  }
+
+  /**
+   * Records completed spend for a programme.
    */
   static recordSpend(programId: string, amountUsd: number, isDemo = false): void {
-    if (isDemo) return; // Keep demo spend partitioned from real caps
+    if (isDemo) return;
 
     db.prepare(`
       UPDATE programs
@@ -96,4 +134,3 @@ export class BudgetService {
     `).run(amountUsd, amountUsd, new Date().toISOString(), programId);
   }
 }
-
