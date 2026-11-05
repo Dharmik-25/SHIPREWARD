@@ -18,3 +18,4 @@ describe('Production Readiness Probe (/api/health/ready)', () => {
     expect(res.body.checks.encryption.message).toContain('AES-256-GCM');
   });
 });
+

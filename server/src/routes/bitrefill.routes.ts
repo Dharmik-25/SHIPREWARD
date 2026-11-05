@@ -40,7 +40,7 @@ bitrefillRouter.get('/bitrefill/mcp/audit', async (req: Request, res: Response) 
   const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '1.00');
   const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '0.60');
   const emergencyFreeze = process.env.EMERGENCY_PURCHASE_FREEZE === 'true';
-  const autoPurchaseEnabled = process.env.AUTO_PURCHASE_ENABLED === 'true';
+  const autoPurchaseEnabled = (process.env.AUTO_PURCHASE_ENABLED || '').trim() === 'true';
 
   // Find ₹50 package
   const pkg50 = swiggyDetails?.packages.find(p => p.package_value === '50');
@@ -126,7 +126,7 @@ bitrefillRouter.get('/bitrefill/guardrails', (req: Request, res: Response) => {
   const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '1.00');
   const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '0.60');
   const emergencyFreeze = process.env.EMERGENCY_PURCHASE_FREEZE === 'true';
-  const autoPurchaseEnabled = process.env.AUTO_PURCHASE_ENABLED === 'true';
+  const autoPurchaseEnabled = (process.env.AUTO_PURCHASE_ENABLED || '').trim() === 'true';
 
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -200,7 +200,7 @@ bitrefillRouter.post('/bitrefill/preview-purchase', async (req: Request, res: Re
   const priceUsd = pkg ? parseFloat(pkg.payment_price) : 0.55;
   const dailyCap = parseFloat(process.env.SPEND_CAP_DAILY_USD || '1.00');
   const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '0.60');
-  const autoPurchaseEnabled = process.env.AUTO_PURCHASE_ENABLED === 'true';
+  const autoPurchaseEnabled = (process.env.AUTO_PURCHASE_ENABLED || '').trim() === 'true';
   const emergencyFreeze = process.env.EMERGENCY_PURCHASE_FREEZE === 'true';
 
   // Evaluate guardrails
@@ -273,7 +273,7 @@ bitrefillRouter.post('/bitrefill/execute-reward', async (req: Request, res: Resp
   }
 
   // Strict check: AUTO_PURCHASE_ENABLED=false requires explicit confirmation
-  const autoPurchaseEnabled = process.env.AUTO_PURCHASE_ENABLED === 'true';
+  const autoPurchaseEnabled = (process.env.AUTO_PURCHASE_ENABLED || '').trim() === 'true';
   const hasConfirmation = Boolean(intent.confirmedByAdmin || intent.manualApproval);
 
   if (!autoPurchaseEnabled && !hasConfirmation) {

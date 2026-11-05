@@ -369,7 +369,7 @@ export class BitrefillService {
     }
 
     // 6. Check Single Reward Threshold & Approval Requirement
-    const autoPurchaseEnabled = process.env.AUTO_PURCHASE_ENABLED === 'true';
+    const autoPurchaseEnabled = (process.env.AUTO_PURCHASE_ENABLED || '').trim() === 'true';
     const singleCap = parseFloat(process.env.SPEND_CAP_SINGLE_REWARD_USD || '0.60');
 
     if (priceUsd > singleCap) {

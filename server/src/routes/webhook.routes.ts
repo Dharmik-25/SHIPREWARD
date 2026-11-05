@@ -461,7 +461,7 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
       let purchaseInitiated = false;
 
       if (policy.autoFulfill && evalResult.status === 'VERIFIED' && evalResult.approvalStatus === 'NOT_REQUIRED') {
-        const autoPurchaseAllowed = process.env.AUTO_PURCHASE_ENABLED === 'true';
+        const autoPurchaseAllowed = (process.env.AUTO_PURCHASE_ENABLED || '').trim() === 'true';
         if (autoPurchaseAllowed) {
           try {
             purchaseResult = await BitrefillService.executePurchase({

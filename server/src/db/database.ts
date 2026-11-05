@@ -313,7 +313,7 @@ function seedInitialPrograms() {
     150.00,
     11.96, // demo spent today
     83.72,
-    JSON.stringify(['swiggy-india', 'zomato-india', 'airtel-india', 'jio-india']),
+    JSON.stringify(['swiggy-money-india', 'swiggy-india', 'zomato-india', 'airtel-india', 'jio-india']),
     1,
     1,
     now,
