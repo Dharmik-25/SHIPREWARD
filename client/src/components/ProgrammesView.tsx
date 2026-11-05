@@ -27,6 +27,7 @@ export const ProgrammesView: React.FC<ProgrammesViewProps> = ({ programmes, onRe
   const [rewardAmount, setRewardAmount] = useState(0.55);
   const [approvalThreshold, setApprovalThreshold] = useState(1.00);
   const [dailyBudget, setDailyBudget] = useState(5.0);
+  const [autoFulfill, setAutoFulfill] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   const handleOpenEdit = (prog: ProgramPolicy) => {
@@ -37,6 +38,7 @@ export const ProgrammesView: React.FC<ProgrammesViewProps> = ({ programmes, onRe
     setRewardAmount(prog.perContributionRewardUsd);
     setApprovalThreshold(prog.approvalThresholdUsd || 1.00);
     setDailyBudget(prog.dailyBudgetUsd);
+    setAutoFulfill(Boolean(prog.autoFulfill));
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -51,7 +53,8 @@ export const ProgrammesView: React.FC<ProgrammesViewProps> = ({ programmes, onRe
         minScore,
         perContributionRewardUsd: rewardAmount,
         approvalThresholdUsd: approvalThreshold,
-        dailyBudgetUsd: dailyBudget
+        dailyBudgetUsd: dailyBudget,
+        autoFulfill
       });
       setEditingProgram(null);
       onRefresh();
@@ -162,6 +165,12 @@ export const ProgrammesView: React.FC<ProgrammesViewProps> = ({ programmes, onRe
                       <span>Budget Spent Today:</span>
                       <span className="text-slate-300">
                         ${(p.spentTodayUsd || 0).toFixed(2)} / ${p.dailyBudgetUsd.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-slate-400 pt-1 border-t border-[#1C202B]">
+                      <span>Fulfillment Mode:</span>
+                      <span className={p.autoFulfill ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
+                        {p.autoFulfill ? '⚡ Autonomous (< threshold)' : '✋ Manual Approval Only'}
                       </span>
                     </div>
                   </div>

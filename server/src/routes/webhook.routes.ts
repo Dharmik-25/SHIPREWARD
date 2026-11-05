@@ -468,6 +468,8 @@ webhookRouter.post('/webhooks/github', async (req: Request, res: Response) => {
               contributionId: contribId,
               productId: evalResult.suggestedProductId || 'swiggy-money-india',
               packageValue: evalResult.suggestedPackageValue || '50',
+              recipientEmail: extractedRecipient?.email,
+              recipientPhone: extractedRecipient?.phone,
               intentPurpose: `Autonomous reward for PR #${prNumber}`,
               manualApproval: false,
               confirmedByAdmin: true,
